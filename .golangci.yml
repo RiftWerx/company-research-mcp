@@ -1,0 +1,56 @@
+version: "2"
+linters:
+  enable:
+    # v2 defaults (made explicit)
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # formatting & style
+    - misspell
+    - revive
+    # security
+    - gosec
+    # HTTP client correctness
+    - bodyclose
+    - noctx
+    # SQL correctness
+    - sqlclosecheck
+    - rowserrcheck
+    # error handling
+    - nilerr
+    # time/duration correctness
+    - durationcheck
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/riftwerx/company-research-mcp
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
