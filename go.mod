@@ -3,9 +3,10 @@ module github.com/riftwerx/company-research-mcp
 go 1.26.1
 
 require (
-	github.com/mark3labs/mcp-go v0.46.0
+	github.com/mark3labs/mcp-go v0.47.0
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/time v0.15.0
+	modernc.org/sqlite v1.48.0
 )
 
 require (
@@ -25,5 +26,4 @@ require (
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.48.0 // indirect
 )
