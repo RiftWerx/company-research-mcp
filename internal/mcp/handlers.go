@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
 )
 
@@ -25,9 +27,9 @@ type CompanyHouseService interface {
 
 // FilingCache is the subset of cache.Cache that MCP handlers require.
 type FilingCache interface {
-	Get(ctx context.Context, chNumber, docID string) (localPath, contentType string, fileSize int64, found bool, err error)
-	Put(ctx context.Context, chNumber, docID, contentType string, body io.Reader) (localPath string, written int64, err error)
-	Clear(ctx context.Context, chNumber string) (deletedFiles, freedBytes, dbRecords int64, err error)
+	Get(ctx context.Context, chNumber, docID string) (*cache.FilingEntry, error)
+	Put(ctx context.Context, chNumber, docID, contentType, filename string, body io.Reader) (localPath string, written int64, err error)
+	Clear(ctx context.Context, chNumber string) (cache.ClearResult, error)
 }
 
 // defaultSearchLimit is the maximum number of search results returned when the caller does not specify a limit.
@@ -40,9 +42,10 @@ const defaultFilingsLimit = 20
 // document_url inputs are validated against this domain to prevent SSRF.
 const chDocumentAPIHost = "document-api.company-information.service.gov.uk"
 
-// chNumberRe matches valid Companies House numbers: an optional 1–2 uppercase letter
-// prefix (e.g. "SC" for Scottish, "NI" for Northern Ireland, "OC" for LLPs) followed
-// by 6–8 digits, for a total of 6–10 alphanumeric characters. Case-insensitive.
+// chNumberRe matches valid Companies House numbers. English companies use 8 digits
+// (e.g. "00445790"); Scottish, Northern Irish, and LLP numbers use a 1–2 letter
+// prefix followed by digits (e.g. "SC123456", "NI012345", "OC300001"). The regex
+// accepts 6–10 alphanumeric characters to cover all known formats. Case-insensitive.
 // This allow-list guards against path traversal: ch_number is used as a directory
 // component in the cache layer and must not contain path separators or traversal sequences.
 var chNumberRe = regexp.MustCompile(`(?i)^[A-Z0-9]{6,10}$`)
@@ -271,15 +274,15 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 		return mcp.NewToolResultError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)"), nil
 	}
 
-	localPath, contentType, fileSize, found, err := s.cache.Get(ctx, chNumber, docID)
+	entry, err := s.cache.Get(ctx, chNumber, docID)
 	if err != nil {
 		return nil, fmt.Errorf("check cache: %w", err)
 	}
-	if found {
+	if entry != nil {
 		return toolResultJSON(fetchResult{
-			LocalPath:     localPath,
-			ContentType:   contentType,
-			FileSizeBytes: fileSize,
+			LocalPath:     entry.LocalPath,
+			ContentType:   entry.ContentType,
+			FileSizeBytes: entry.FileSize,
 			Source:        "cache",
 		})
 	}
@@ -288,9 +291,37 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 	if err != nil {
 		return toolResultForCHError(err, "fetch document")
 	}
-	defer doc.Body.Close()
+	defer doc.Body.Close() // captures original body; safe to replace doc.Body below
 
-	localPath, written, err := s.cache.Put(ctx, chNumber, docID, doc.ContentType, doc.Body)
+	// Detect zip by Content-Type first; fall back to magic bytes PK\x03\x04.
+	peek := make([]byte, 4)
+	n, _ := io.ReadFull(doc.Body, peek)
+	peeked := peek[:n]
+	isZip := doc.ContentType == "application/zip" ||
+		(n >= 4 && peeked[0] == 'P' && peeked[1] == 'K' && peeked[2] == 0x03 && peeked[3] == 0x04)
+	// Reconstruct the body so the peeked bytes are not consumed.
+	doc.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), doc.Body))
+
+	cacheFilename := ""
+	if isZip {
+		zipData, readErr := readZipBody(doc.Body, cache.MaxFileSizeBytes)
+		if errors.Is(readErr, errZipTooLarge) {
+			// Too-large is a user-facing condition; other read errors are unexpected and propagate.
+			return mcp.NewToolResultError(readErr.Error()), nil
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read zip: %w", readErr)
+		}
+		extracted, extractedName, extractedType, extractErr := extractFromZip(zipData, cache.MaxFileSizeBytes)
+		if extractErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("unpack zip: %s", extractErr)), nil
+		}
+		doc.Body = io.NopCloser(bytes.NewReader(extracted))
+		doc.ContentType = extractedType
+		cacheFilename = extractedName
+	}
+
+	localPath, written, err := s.cache.Put(ctx, chNumber, docID, doc.ContentType, cacheFilename, doc.Body)
 	if err != nil {
 		return nil, fmt.Errorf("cache document: %w", err)
 	}
@@ -310,15 +341,15 @@ func (s *Server) handleClearCache(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
 	}
 
-	deleted, freed, dbRecs, err := s.cache.Clear(ctx, chNumber)
+	cleared, err := s.cache.Clear(ctx, chNumber)
 	if err != nil {
 		return nil, fmt.Errorf("clear cache: %w", err)
 	}
 
 	return toolResultJSON(clearCacheResult{
-		DeletedFiles:     deleted,
-		FreedBytes:       freed,
-		DBRecordsRemoved: dbRecs,
+		DeletedFiles:     cleared.DeletedFiles,
+		FreedBytes:       cleared.FreedBytes,
+		DBRecordsRemoved: cleared.DBRecords,
 	})
 }
 
@@ -348,8 +379,8 @@ func toolResultJSON(v any) (*mcp.CallToolResult, error) {
 
 // isAllowedDocumentURL returns true if rawURL is a valid CH document API URL.
 // Absolute URLs (those with a scheme or host) must use HTTPS and resolve to
-// chDocumentAPIHost. Relative paths (no scheme, no host) are accepted as-is;
-// they originate from the CH API and are not valid targets for SSRF.
+// chDocumentAPIHost. Relative paths (no scheme, no host) pass through; they
+// cannot be used for SSRF because Go's HTTP client rejects requests without a host.
 func isAllowedDocumentURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -358,7 +389,7 @@ func isAllowedDocumentURL(rawURL string) bool {
 	if u.Scheme != "" || u.Host != "" {
 		return u.Scheme == "https" && u.Hostname() == chDocumentAPIHost
 	}
-	return true // relative path — not externally addressable
+	return true // relative path — no host, so HTTP client will reject it
 }
 
 // docIDFromURL extracts the document ID from a CH document URL.

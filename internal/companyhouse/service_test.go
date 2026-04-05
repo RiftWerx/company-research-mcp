@@ -314,9 +314,10 @@ func TestGetDocument(t *testing.T) {
 
 		// Arrange
 		pdfContent := "%PDF-1.4 fake content"
-		var gotURL string
+		var gotURL, gotAccept string
 		stub := &stubHTTP{fn: func(req *http.Request) (*http.Response, error) {
 			gotURL = req.URL.String()
+			gotAccept = req.Header.Get("Accept")
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/pdf"}},
@@ -333,6 +334,7 @@ func TestGetDocument(t *testing.T) {
 		if doc != nil {
 			defer doc.Body.Close()
 			assert.Equal(t, "https://document-api.company-information.service.gov.uk/document/abc123/content", gotURL)
+			assert.Equal(t, "application/xhtml+xml,application/pdf,*/*", gotAccept)
 			assert.Equal(t, "application/pdf", doc.ContentType)
 			b, err := io.ReadAll(doc.Body)
 			require.NoError(t, err)

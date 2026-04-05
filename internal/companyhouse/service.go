@@ -214,6 +214,9 @@ func (s *Service) GetDocument(ctx context.Context, documentURL string) (*Documen
 			return nil, fmt.Errorf("build request: %w", err)
 		}
 		req.SetBasicAuth(s.apiKey, "")
+		// xhtml is listed first so CH prefers iXBRL/zip responses for companies that support
+		// them; the MCP layer transparently extracts the primary document from the zip.
+		req.Header.Set("Accept", "application/xhtml+xml,application/pdf,*/*")
 		return s.http.Do(ctx, req)
 	})
 	if err != nil {
