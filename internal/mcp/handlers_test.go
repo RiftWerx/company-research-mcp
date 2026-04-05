@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
@@ -125,7 +126,7 @@ func TestHandleSearchCompany(t *testing.T) {
 		result, err := callTool(srv.handleSearchCompany, map[string]any{"query": "Tesco"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 	})
 
@@ -139,7 +140,7 @@ func TestHandleSearchCompany(t *testing.T) {
 		result, err := callTool(srv.handleSearchCompany, map[string]any{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -156,7 +157,7 @@ func TestHandleSearchCompany(t *testing.T) {
 		result, err := callTool(srv.handleSearchCompany, map[string]any{"query": "NoSuchCompany"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -173,7 +174,7 @@ func TestHandleSearchCompany(t *testing.T) {
 		result, err := callTool(srv.handleSearchCompany, map[string]any{"query": "Tesco"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -190,7 +191,7 @@ func TestHandleSearchCompany(t *testing.T) {
 		result, err := callTool(srv.handleSearchCompany, map[string]any{"query": "Tesco"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -241,7 +242,7 @@ func TestHandleGetCompanyProfile(t *testing.T) {
 		result, err := callTool(srv.handleGetCompanyProfile, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 	})
 
@@ -258,7 +259,7 @@ func TestHandleGetCompanyProfile(t *testing.T) {
 		result, err := callTool(srv.handleGetCompanyProfile, map[string]any{"ch_number": "99999999"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -272,7 +273,7 @@ func TestHandleGetCompanyProfile(t *testing.T) {
 		result, err := callTool(srv.handleGetCompanyProfile, map[string]any{"ch_number": "../../etc/passwd"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -286,7 +287,7 @@ func TestHandleGetCompanyProfile(t *testing.T) {
 		result, err := callTool(srv.handleGetCompanyProfile, map[string]any{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -336,7 +337,7 @@ func TestHandleListFilings(t *testing.T) {
 		result, err := callTool(srv.handleListFilings, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 	})
 
@@ -350,7 +351,7 @@ func TestHandleListFilings(t *testing.T) {
 		result, err := callTool(srv.handleListFilings, map[string]any{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -364,7 +365,7 @@ func TestHandleListFilings(t *testing.T) {
 		result, err := callTool(srv.handleListFilings, map[string]any{"ch_number": "../../etc"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -410,10 +411,10 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out fetchResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "cache", out.Source)
 		assert.Equal(t, "/cache/filing.pdf", out.LocalPath)
 	})
@@ -444,10 +445,10 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out fetchResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "companies_house", out.Source)
 	})
 
@@ -470,7 +471,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -484,7 +485,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		result, err := callTool(srv.handleFetchFiling, map[string]any{"document_url": docURL})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -498,7 +499,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		result, err := callTool(srv.handleFetchFiling, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -515,7 +516,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -550,10 +551,10 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out fetchResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "application/xhtml+xml", out.ContentType)
 		assert.Equal(t, "companies_house", out.Source)
 	})
@@ -588,10 +589,10 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out fetchResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "application/xhtml+xml", out.ContentType)
 	})
 
@@ -620,7 +621,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 }
@@ -670,7 +671,7 @@ func TestHandleGetLatest(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 	})
 
@@ -693,7 +694,7 @@ func TestHandleGetLatest(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -726,7 +727,7 @@ func TestHandleGetLatest(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -740,7 +741,7 @@ func TestHandleGetLatest(t *testing.T) {
 		result, err := callTool(srv.handleGetLatest, map[string]any{"category": "accounts"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -754,7 +755,7 @@ func TestHandleGetLatest(t *testing.T) {
 		result, err := callTool(srv.handleGetLatest, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -771,7 +772,7 @@ func TestHandleGetLatest(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 }
@@ -792,10 +793,10 @@ func TestHandleClearCache(t *testing.T) {
 		result, err := callTool(srv.handleClearCache, map[string]any{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out clearCacheResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.EqualValues(t, 2, out.DeletedFiles)
 		assert.EqualValues(t, 500, out.FreedBytes)
 		assert.EqualValues(t, 2, out.DBRecordsRemoved)
@@ -814,10 +815,10 @@ func TestHandleClearCache(t *testing.T) {
 		result, err := callTool(srv.handleClearCache, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out clearCacheResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.EqualValues(t, 1, out.DeletedFiles)
 	})
 
@@ -834,12 +835,12 @@ func TestHandleClearCache(t *testing.T) {
 		result, err := callTool(srv.handleClearCache, map[string]any{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out clearCacheResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.EqualValues(t, 0, out.DeletedFiles)
-		assert.EqualValues(t, int64(0), out.FreedBytes)
+		assert.Equal(t, int64(0), out.FreedBytes)
 	})
 
 	t.Run("should propagate cache errors", func(t *testing.T) {
@@ -868,7 +869,7 @@ func TestHandleClearCache(t *testing.T) {
 		result, err := callTool(srv.handleClearCache, map[string]any{"ch_number": "../../etc"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 }
@@ -926,7 +927,7 @@ func TestFetchFilingSSRFValidation(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
@@ -943,7 +944,7 @@ func TestFetchFilingSSRFValidation(t *testing.T) {
 		})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 }
@@ -980,10 +981,10 @@ func TestHandleListFilingsFiltering(t *testing.T) {
 		result, err := callTool(srv.handleListFilings, map[string]any{"ch_number": "00445790"})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.False(t, isToolError(result))
 		var out []filingResult
-		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Len(t, out, 1)
 		assert.Equal(t, "with-doc", out[0].TransactionID)
 	})

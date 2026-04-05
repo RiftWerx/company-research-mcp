@@ -22,6 +22,8 @@ linters:
     - nilerr
     # time/duration correctness
     - durationcheck
+    # testify correctness
+    - testifylint
   settings:
     revive:
       rules:

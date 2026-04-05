@@ -3,7 +3,6 @@ package mcp
 import (
 	"archive/zip"
 	"bytes"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -187,7 +186,7 @@ func TestReadZipBody(t *testing.T) {
 		_, err := readZipBody(bytes.NewReader(oversized), limit)
 
 		// Assert
-		assert.True(t, errors.Is(err, errZipTooLarge))
+		assert.ErrorIs(t, err, errZipTooLarge)
 	})
 
 	t.Run("should return a wrapped error when the reader fails", func(t *testing.T) {

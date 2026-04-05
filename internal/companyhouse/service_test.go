@@ -86,7 +86,7 @@ func TestSearchCompanies(t *testing.T) {
 		results, err := svc.SearchCompanies(context.Background(), "Tesco", 1)
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "00445790", results[0].CompanyNumber)
 		assert.Equal(t, "TESCO PLC", results[0].Title)
@@ -107,9 +107,9 @@ func TestSearchCompanies(t *testing.T) {
 		_, err := svc.SearchCompanies(context.Background(), "test", 0)
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "my-api-key", gotUser)
-		assert.Equal(t, "", gotPass)
+		assert.Empty(t, gotPass)
 	})
 
 	t.Run("should return ErrUnauthorized for a 401 response", func(t *testing.T) {
@@ -166,7 +166,7 @@ func TestSearchCompanies(t *testing.T) {
 		results, err := svc.SearchCompanies(context.Background(), "Tesco", 1)
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "TESCO PLC", results[0].Title)
@@ -196,7 +196,7 @@ func TestGetCompanyProfile(t *testing.T) {
 		profile, err := svc.GetCompanyProfile(context.Background(), "12345")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "/company/00012345", gotPath)
 		assert.Equal(t, "EXAMPLE LTD", profile.CompanyName)
 	})
@@ -253,7 +253,7 @@ func TestGetFilingHistory(t *testing.T) {
 		filings, err := svc.GetFilingHistory(context.Background(), "00445790", companyhouse.ListFilingsOptions{})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Len(t, filings, 2)
 		wantDate := time.Date(2024, 6, 21, 0, 0, 0, 0, time.UTC)
 		assert.True(t, filings[0].Date.Equal(wantDate), "date: got %v, want %v", filings[0].Date, wantDate)
@@ -286,7 +286,7 @@ func TestGetDocument(t *testing.T) {
 		doc, err := svc.GetDocument(context.Background(), "https://document-api.company-information.service.gov.uk/document/abc123")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
 		if doc != nil {
 			doc.Body.Close()
@@ -330,7 +330,7 @@ func TestGetDocument(t *testing.T) {
 		doc, err := svc.GetDocument(context.Background(), "https://document-api.company-information.service.gov.uk/document/abc123")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		if doc != nil {
 			defer doc.Body.Close()
 			assert.Equal(t, "https://document-api.company-information.service.gov.uk/document/abc123/content", gotURL)
