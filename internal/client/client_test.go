@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/riftwerx/company-research-mcp/internal/client"
 )
@@ -56,7 +57,7 @@ func TestClient(t *testing.T) {
 		}
 
 		// Assert
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.True(t, isContextError(err), "expected a context error, got: %v", err)
 	})
 
@@ -168,7 +169,7 @@ func TestClient(t *testing.T) {
 		resp, err := c.Get(context.Background(), redirector.URL)
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		if resp != nil {
 			defer resp.Body.Close()
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -199,7 +200,7 @@ func TestClient(t *testing.T) {
 		resp, err := c.Get(context.Background(), srv.URL)
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		if resp != nil {
 			resp.Body.Close()
 		}

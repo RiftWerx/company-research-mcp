@@ -65,7 +65,7 @@ func TestNewDefaultBaseDir(t *testing.T) {
 	c, err := New(Config{}) // empty BaseDir → resolves via XDG_CACHE_HOME
 
 	// Assert
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if c != nil {
 		defer c.Close()
 	}
@@ -85,7 +85,7 @@ func TestNew(t *testing.T) {
 		c, err := New(Config{BaseDir: dir})
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.NotNil(t, c)
 		defer c.Close()
 		assert.FileExists(t, filepath.Join(dir, dbFileName))
@@ -125,7 +125,7 @@ func TestPut(t *testing.T) {
 		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(content))
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.EqualValues(t, len(content), written)
 		assert.FileExists(t, localPath)
 		assert.Equal(t, ".pdf", filepath.Ext(localPath))
@@ -144,7 +144,7 @@ func TestPut(t *testing.T) {
 		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", infiniteReader{})
 
 		// Assert
-		assert.ErrorContains(t, err, "size limit")
+		require.ErrorContains(t, err, "size limit")
 		// Verify no temp files were left behind.
 		matches, _ := filepath.Glob(filepath.Join(c.baseDir, cacheSubDir, "00445790", "abc123", "*.tmp"))
 		assert.Empty(t, matches, "temp file should be cleaned up on size limit error")
@@ -160,7 +160,7 @@ func TestPut(t *testing.T) {
 		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", errReader{})
 
 		// Assert
-		assert.Error(t, err)
+		require.Error(t, err)
 		// Verify no temp files were left behind.
 		matches, _ := filepath.Glob(filepath.Join(c.baseDir, cacheSubDir, "00445790", "abc123", "*.tmp"))
 		assert.Empty(t, matches, "temp file should be cleaned up on reader error")
@@ -177,7 +177,7 @@ func TestPut(t *testing.T) {
 		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data")))
 
 		// Assert
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.NoFileExists(t, filepath.Join(c.baseDir, cacheSubDir, "00445790", "abc123", "filing.pdf"))
 	})
 
@@ -193,7 +193,7 @@ func TestPut(t *testing.T) {
 		localPath, _, err := c.Put(context.Background(), "03033634", "doc123", "application/xhtml+xml", wantName, bytes.NewReader(content))
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.FileExists(t, localPath)
 		assert.Equal(t, wantName, filepath.Base(localPath))
 	})
@@ -212,7 +212,7 @@ func TestPut(t *testing.T) {
 		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(second))
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.EqualValues(t, len(second), written)
 		got, err := os.ReadFile(localPath)
 		require.NoError(t, err)
@@ -253,7 +253,7 @@ func TestGet(t *testing.T) {
 		entry, err := c.Get(context.Background(), "00445790", "notexist")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Nil(t, entry)
 	})
 
@@ -270,7 +270,7 @@ func TestGet(t *testing.T) {
 		entry, err := c.Get(context.Background(), "00445790", "abc123")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Nil(t, entry)
 	})
 }
@@ -292,9 +292,9 @@ func TestClear(t *testing.T) {
 		result, err := c.Clear(context.Background(), "")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.EqualValues(t, 2, result.DeletedFiles)
-		assert.Greater(t, result.FreedBytes, int64(0))
+		assert.Positive(t, result.FreedBytes)
 		assert.EqualValues(t, 2, result.DBRecords)
 		assert.NoFileExists(t, storedPath)
 	})
@@ -313,7 +313,7 @@ func TestClear(t *testing.T) {
 		result, err := c.Clear(context.Background(), "00445790")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.EqualValues(t, 1, result.DeletedFiles)
 		assert.EqualValues(t, 1, result.DBRecords)
 		assert.FileExists(t, keptPath)
@@ -329,7 +329,7 @@ func TestClear(t *testing.T) {
 		result, err := c.Clear(context.Background(), "")
 
 		// Assert
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.EqualValues(t, 0, result.DeletedFiles)
 		assert.EqualValues(t, 0, result.FreedBytes)
 		assert.EqualValues(t, 0, result.DBRecords)
