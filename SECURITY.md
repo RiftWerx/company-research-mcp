@@ -4,12 +4,9 @@
 
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
-Report vulnerabilities privately by emailing the maintainer directly. You can find
-contact details on the [maintainer's GitHub profile](https://github.com/RiftWerx).
-
-Alternatively, once GitHub private vulnerability reporting is enabled for this
-repository you will be able to report via
-**Security → Report a vulnerability** on the repository page.
+Use **[GitHub's private vulnerability reporting](https://github.com/RiftWerx/company-research-mcp/security/advisories/new)**
+to report a vulnerability confidentially. Alternatively, you can find contact
+details on the [maintainer's GitHub profile](https://github.com/RiftWerx).
 
 ## Supported Versions
 
