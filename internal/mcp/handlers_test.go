@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
 )
 
@@ -50,28 +52,23 @@ type mockFilingCache struct {
 	mock.Mock
 }
 
-func (m *mockFilingCache) Get(ctx context.Context, chNumber, docID string) (string, string, int64, bool, error) {
+func (m *mockFilingCache) Get(ctx context.Context, chNumber, docID string) (*cache.FilingEntry, error) {
 	args := m.Called(ctx, chNumber, docID)
-	localPath, _ := args.Get(0).(string)
-	contentType, _ := args.Get(1).(string)
-	fileSize, _ := args.Get(2).(int64)
-	found, _ := args.Get(3).(bool)
-	return localPath, contentType, fileSize, found, args.Error(4)
+	entry, _ := args.Get(0).(*cache.FilingEntry)
+	return entry, args.Error(1)
 }
 
-func (m *mockFilingCache) Put(ctx context.Context, chNumber, docID, contentType string, body io.Reader) (string, int64, error) {
-	args := m.Called(ctx, chNumber, docID, contentType, body)
+func (m *mockFilingCache) Put(ctx context.Context, chNumber, docID, contentType, filename string, body io.Reader) (string, int64, error) {
+	args := m.Called(ctx, chNumber, docID, contentType, filename, body)
 	localPath, _ := args.Get(0).(string)
 	written, _ := args.Get(1).(int64)
 	return localPath, written, args.Error(2)
 }
 
-func (m *mockFilingCache) Clear(ctx context.Context, chNumber string) (int64, int64, int64, error) {
+func (m *mockFilingCache) Clear(ctx context.Context, chNumber string) (cache.ClearResult, error) {
 	args := m.Called(ctx, chNumber)
-	deleted, _ := args.Get(0).(int64)
-	freed, _ := args.Get(1).(int64)
-	dbRecs, _ := args.Get(2).(int64)
-	return deleted, freed, dbRecs, args.Error(3)
+	result, _ := args.Get(0).(cache.ClearResult)
+	return result, args.Error(1)
 }
 
 // callTool is a test helper that calls the given handler with the provided arguments.
@@ -401,10 +398,10 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Arrange
 		svc := &mockCHService{}
-		cache := &mockFilingCache{}
-		cache.On("Get", mock.Anything, "00445790", "abc123").Return("/cache/filing.pdf", "application/pdf", int64(100), true, nil)
-		defer cache.AssertExpectations(t)
-		srv := New(svc, cache)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return(&cache.FilingEntry{LocalPath: "/cache/filing.pdf", ContentType: "application/pdf", FileSize: int64(100)}, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
@@ -434,11 +431,11 @@ func TestHandleFetchFiling(t *testing.T) {
 			nil,
 		)
 		defer svc.AssertExpectations(t)
-		cache := &mockFilingCache{}
-		cache.On("Get", mock.Anything, "00445790", "abc123").Return("", "", int64(0), false, nil)
-		cache.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
-		defer cache.AssertExpectations(t)
-		srv := New(svc, cache)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
@@ -461,10 +458,10 @@ func TestHandleFetchFiling(t *testing.T) {
 		svc := &mockCHService{}
 		svc.On("GetDocument", mock.Anything, docURL).Return(nil, companyhouse.ErrNotFound)
 		defer svc.AssertExpectations(t)
-		cache := &mockFilingCache{}
-		cache.On("Get", mock.Anything, "00445790", "abc123").Return("", "", int64(0), false, nil)
-		defer cache.AssertExpectations(t)
-		srv := New(svc, cache)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
@@ -521,6 +518,111 @@ func TestHandleFetchFiling(t *testing.T) {
 		assert.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
+
+	t.Run("should extract primary xhtml from a zip response", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		xhtmlContent := "<html><body>iXBRL content</body></html>"
+		zipBody := buildZip(t, [][2]string{
+			{"dir/report-2024-T01.xhtml", xhtmlContent},
+		})
+		svc := &mockCHService{}
+		svc.On("GetDocument", mock.Anything, docURL).Return(
+			&companyhouse.Document{
+				Body:        io.NopCloser(bytes.NewReader(zipBody)),
+				ContentType: "application/zip",
+			},
+			nil,
+		)
+		defer svc.AssertExpectations(t)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("Put", mock.Anything, "00445790", "abc123", "application/xhtml+xml", "report-2024-T01.xhtml", mock.Anything).
+			Return("/cache/report-2024-T01.xhtml", int64(len(xhtmlContent)), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		assert.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out fetchResult
+		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.Equal(t, "application/xhtml+xml", out.ContentType)
+		assert.Equal(t, "companies_house", out.Source)
+	})
+
+	t.Run("should detect zip by magic bytes when Content-Type is wrong", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — same zip payload but served with wrong Content-Type
+		zipBody := buildZip(t, [][2]string{
+			{"report.xhtml", "<html/>"},
+		})
+		svc := &mockCHService{}
+		svc.On("GetDocument", mock.Anything, docURL).Return(
+			&companyhouse.Document{
+				Body:        io.NopCloser(bytes.NewReader(zipBody)),
+				ContentType: "application/octet-stream",
+			},
+			nil,
+		)
+		defer svc.AssertExpectations(t)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("Put", mock.Anything, "00445790", "abc123", "application/xhtml+xml", "report.xhtml", mock.Anything).
+			Return("/cache/report.xhtml", int64(7), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		assert.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out fetchResult
+		assert.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.Equal(t, "application/xhtml+xml", out.ContentType)
+	})
+
+	t.Run("should return tool error when zip is malformed", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — PK magic bytes but not a valid zip
+		svc := &mockCHService{}
+		svc.On("GetDocument", mock.Anything, docURL).Return(
+			&companyhouse.Document{
+				Body:        io.NopCloser(strings.NewReader("PK\x03\x04not a real zip")),
+				ContentType: "application/zip",
+			},
+			nil,
+		)
+		defer svc.AssertExpectations(t)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		assert.NoError(t, err)
+		assert.True(t, isToolError(result))
+	})
 }
 
 func TestHandleGetLatest(t *testing.T) {
@@ -555,11 +657,11 @@ func TestHandleGetLatest(t *testing.T) {
 			nil,
 		)
 		defer svc.AssertExpectations(t)
-		cache := &mockFilingCache{}
-		cache.On("Get", mock.Anything, "00445790", "abc123").Return("", "", int64(0), false, nil)
-		cache.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
-		defer cache.AssertExpectations(t)
-		srv := New(svc, cache)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleGetLatest, map[string]any{
@@ -681,10 +783,10 @@ func TestHandleClearCache(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
-		cache := &mockFilingCache{}
-		cache.On("Clear", mock.Anything, "").Return(int64(2), int64(500), int64(2), nil)
-		defer cache.AssertExpectations(t)
-		srv := New(&mockCHService{}, cache)
+		fc := &mockFilingCache{}
+		fc.On("Clear", mock.Anything, "").Return(cache.ClearResult{DeletedFiles: 2, FreedBytes: 500, DBRecords: 2}, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
 
 		// Act
 		result, err := callTool(srv.handleClearCache, map[string]any{})
@@ -703,10 +805,10 @@ func TestHandleClearCache(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
-		cache := &mockFilingCache{}
-		cache.On("Clear", mock.Anything, "00445790").Return(int64(1), int64(250), int64(1), nil)
-		defer cache.AssertExpectations(t)
-		srv := New(&mockCHService{}, cache)
+		fc := &mockFilingCache{}
+		fc.On("Clear", mock.Anything, "00445790").Return(cache.ClearResult{DeletedFiles: 1, FreedBytes: 250, DBRecords: 1}, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
 
 		// Act
 		result, err := callTool(srv.handleClearCache, map[string]any{"ch_number": "00445790"})
@@ -723,10 +825,10 @@ func TestHandleClearCache(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
-		cache := &mockFilingCache{}
-		cache.On("Clear", mock.Anything, "").Return(int64(0), int64(0), int64(0), nil)
-		defer cache.AssertExpectations(t)
-		srv := New(&mockCHService{}, cache)
+		fc := &mockFilingCache{}
+		fc.On("Clear", mock.Anything, "").Return(cache.ClearResult{}, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
 
 		// Act
 		result, err := callTool(srv.handleClearCache, map[string]any{})
@@ -744,10 +846,10 @@ func TestHandleClearCache(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
-		cache := &mockFilingCache{}
-		cache.On("Clear", mock.Anything, "").Return(int64(0), int64(0), int64(0), errors.New("disk error"))
-		defer cache.AssertExpectations(t)
-		srv := New(&mockCHService{}, cache)
+		fc := &mockFilingCache{}
+		fc.On("Clear", mock.Anything, "").Return(cache.ClearResult{}, errors.New("disk error"))
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
 
 		// Act
 		_, err := callTool(srv.handleClearCache, map[string]any{})

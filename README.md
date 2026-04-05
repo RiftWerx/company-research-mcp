@@ -140,6 +140,24 @@ Add to `~/.continue/config.json` under `mcpServers`:
 | `get_latest` | Fetch the most recent filing of a given category |
 | `clear_cache` | Delete cached filing documents |
 
+### Document formats
+
+Filings are returned as **PDF** or **iXBRL** (`.xhtml`) depending on what Companies House provides.
+When a filing is served as a zip archive the primary document is extracted automatically — the
+`local_path` in the response points to the extracted file, not the original zip.
+
+### Local cache
+
+Downloaded filings are stored on disk and reused on subsequent requests:
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.cache/company-research.mcp/` |
+| macOS | `~/Library/Caches/company-research.mcp/` |
+| Windows | `%LOCALAPPDATA%\company-research.mcp\` |
+
+Use the `clear_cache` tool to free disk space.
+
 ## Examples
 
 (See [EXAMPLE_PROMPTS.md](EXAMPLE_PROMPTS.md) for more usage examples)

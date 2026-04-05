@@ -122,7 +122,7 @@ func TestPut(t *testing.T) {
 		content := []byte("PDF filing content")
 
 		// Act
-		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader(content))
+		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(content))
 
 		// Assert
 		assert.NoError(t, err)
@@ -141,7 +141,7 @@ func TestPut(t *testing.T) {
 		c := newTestCache(t)
 
 		// Act
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", infiniteReader{})
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", infiniteReader{})
 
 		// Assert
 		assert.ErrorContains(t, err, "size limit")
@@ -157,7 +157,7 @@ func TestPut(t *testing.T) {
 		c := newTestCache(t)
 
 		// Act
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", errReader{})
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", errReader{})
 
 		// Assert
 		assert.Error(t, err)
@@ -174,11 +174,28 @@ func TestPut(t *testing.T) {
 		require.NoError(t, c.Close())
 
 		// Act
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader([]byte("data")))
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data")))
 
 		// Assert
 		assert.Error(t, err)
 		assert.NoFileExists(t, filepath.Join(c.baseDir, cacheSubDir, "00445790", "abc123", "filing.pdf"))
+	})
+
+	t.Run("should use the provided filename when non-empty", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		content := []byte("iXBRL content")
+		wantName := "213800Y5CJHXOATK7X11-2024-12-31-T01.xhtml"
+
+		// Act
+		localPath, _, err := c.Put(context.Background(), "03033634", "doc123", "application/xhtml+xml", wantName, bytes.NewReader(content))
+
+		// Assert
+		assert.NoError(t, err)
+		assert.FileExists(t, localPath)
+		assert.Equal(t, wantName, filepath.Base(localPath))
 	})
 
 	t.Run("should overwrite an existing entry", func(t *testing.T) {
@@ -190,9 +207,9 @@ func TestPut(t *testing.T) {
 		second := []byte("second, longer content")
 
 		// Act
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader(first))
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(first))
 		require.NoError(t, err)
-		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader(second))
+		localPath, written, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(second))
 
 		// Assert
 		assert.NoError(t, err)
@@ -206,55 +223,55 @@ func TestPut(t *testing.T) {
 func TestGet(t *testing.T) {
 	t.Parallel()
 
-	t.Run("should return found=true for a stored document", func(t *testing.T) {
+	t.Run("should return entry for a stored document", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
 		c := newTestCache(t)
 		content := []byte("filing data")
-		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader(content))
+		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader(content))
 		require.NoError(t, err)
 
 		// Act
-		localPath, contentType, fileSize, found, err := c.Get(context.Background(), "00445790", "abc123")
+		entry, err := c.Get(context.Background(), "00445790", "abc123")
 
 		// Assert
-		assert.NoError(t, err)
-		assert.True(t, found)
-		assert.Equal(t, storedPath, localPath)
-		assert.Equal(t, "application/pdf", contentType)
-		assert.EqualValues(t, len(content), fileSize)
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, storedPath, entry.LocalPath)
+		assert.Equal(t, "application/pdf", entry.ContentType)
+		assert.EqualValues(t, len(content), entry.FileSize)
 	})
 
-	t.Run("should return found=false when document is not in database", func(t *testing.T) {
+	t.Run("should return nil when document is not in database", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
 		c := newTestCache(t)
 
 		// Act
-		_, _, _, found, err := c.Get(context.Background(), "00445790", "notexist")
+		entry, err := c.Get(context.Background(), "00445790", "notexist")
 
 		// Assert
 		assert.NoError(t, err)
-		assert.False(t, found)
+		assert.Nil(t, entry)
 	})
 
-	t.Run("should return found=false when file has been deleted from disk", func(t *testing.T) {
+	t.Run("should return nil when file has been deleted from disk", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
 		c := newTestCache(t)
-		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader([]byte("data")))
+		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data")))
 		require.NoError(t, err)
 		os.Remove(storedPath)
 
 		// Act
-		_, _, _, found, err := c.Get(context.Background(), "00445790", "abc123")
+		entry, err := c.Get(context.Background(), "00445790", "abc123")
 
 		// Assert
 		assert.NoError(t, err)
-		assert.False(t, found)
+		assert.Nil(t, entry)
 	})
 }
 
@@ -266,19 +283,19 @@ func TestClear(t *testing.T) {
 
 		// Arrange
 		c := newTestCache(t)
-		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader([]byte("data1")))
+		storedPath, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data1")))
 		require.NoError(t, err)
-		_, _, err = c.Put(context.Background(), "99999999", "def456", "application/pdf", bytes.NewReader([]byte("data2")))
+		_, _, err = c.Put(context.Background(), "99999999", "def456", "application/pdf", "", bytes.NewReader([]byte("data2")))
 		require.NoError(t, err)
 
 		// Act
-		deleted, freed, dbRecs, err := c.Clear(context.Background(), "")
+		result, err := c.Clear(context.Background(), "")
 
 		// Assert
 		assert.NoError(t, err)
-		assert.EqualValues(t, 2, deleted)
-		assert.Greater(t, freed, int64(0))
-		assert.EqualValues(t, 2, dbRecs)
+		assert.EqualValues(t, 2, result.DeletedFiles)
+		assert.Greater(t, result.FreedBytes, int64(0))
+		assert.EqualValues(t, 2, result.DBRecords)
 		assert.NoFileExists(t, storedPath)
 	})
 
@@ -287,18 +304,18 @@ func TestClear(t *testing.T) {
 
 		// Arrange
 		c := newTestCache(t)
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader([]byte("data1")))
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data1")))
 		require.NoError(t, err)
-		keptPath, _, err := c.Put(context.Background(), "99999999", "def456", "application/pdf", bytes.NewReader([]byte("data2")))
+		keptPath, _, err := c.Put(context.Background(), "99999999", "def456", "application/pdf", "", bytes.NewReader([]byte("data2")))
 		require.NoError(t, err)
 
 		// Act
-		deleted, _, dbRecs, err := c.Clear(context.Background(), "00445790")
+		result, err := c.Clear(context.Background(), "00445790")
 
 		// Assert
 		assert.NoError(t, err)
-		assert.EqualValues(t, 1, deleted)
-		assert.EqualValues(t, 1, dbRecs)
+		assert.EqualValues(t, 1, result.DeletedFiles)
+		assert.EqualValues(t, 1, result.DBRecords)
 		assert.FileExists(t, keptPath)
 	})
 
@@ -309,13 +326,13 @@ func TestClear(t *testing.T) {
 		c := newTestCache(t)
 
 		// Act
-		deleted, freed, dbRecs, err := c.Clear(context.Background(), "")
+		result, err := c.Clear(context.Background(), "")
 
 		// Assert
 		assert.NoError(t, err)
-		assert.EqualValues(t, 0, deleted)
-		assert.EqualValues(t, 0, freed)
-		assert.EqualValues(t, 0, dbRecs)
+		assert.EqualValues(t, 0, result.DeletedFiles)
+		assert.EqualValues(t, 0, result.FreedBytes)
+		assert.EqualValues(t, 0, result.DBRecords)
 	})
 
 	t.Run("should return an error when the DB delete fails", func(t *testing.T) {
@@ -324,42 +341,14 @@ func TestClear(t *testing.T) {
 		// Arrange: close the DB so the DELETE statement will fail.
 		// os.RemoveAll still succeeds (file system is fine).
 		c := newTestCache(t)
-		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", bytes.NewReader([]byte("data")))
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data")))
 		require.NoError(t, err)
 		require.NoError(t, c.Close())
 
 		// Act
-		_, _, _, err = c.Clear(context.Background(), "")
+		_, err = c.Clear(context.Background(), "")
 
 		// Assert
 		assert.Error(t, err)
 	})
-}
-
-func TestFileExt(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		contentType string
-		want        string
-	}{
-		{"application/pdf", ".pdf"},
-		{"application/pdf; charset=utf-8", ".pdf"},
-		{"application/xhtml+xml", ".xhtml"},
-		{"application/octet-stream", ".bin"},
-		{"text/html", ".bin"},
-		{"", ".bin"},
-	}
-
-	for _, test := range cases {
-		t.Run(test.contentType, func(t *testing.T) {
-			t.Parallel()
-
-			// Act
-			got := fileExt(test.contentType)
-
-			// Assert
-			assert.Equal(t, test.want, got)
-		})
-	}
 }
