@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
 
@@ -15,10 +16,20 @@ import (
 // errZipTooLarge is returned by readZipBody when the zip body exceeds the size limit.
 var errZipTooLarge = errors.New("zip filing exceeds maximum size limit")
 
+// safeInt64Size converts a uint64 byte count to int64 for use with io.LimitedReader.
+// If n exceeds math.MaxInt64 it returns math.MaxInt64, which is the largest limit
+// LimitedReader can enforce.
+func safeInt64Size(n uint64) int64 {
+	if n >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(n)
+}
+
 // readZipBody reads at most maxBytes of zip data from r.
 // Returns errZipTooLarge if the body exceeds maxBytes, or a wrapped error on read failure.
 func readZipBody(r io.Reader, maxBytes uint64) ([]byte, error) {
-	lr := &io.LimitedReader{R: r, N: int64(maxBytes) + 1}
+	lr := &io.LimitedReader{R: r, N: safeInt64Size(maxBytes) + 1}
 	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, fmt.Errorf("read zip body: %w", err)
@@ -105,7 +116,7 @@ func extractFromZip(zipData []byte, maxBytes uint64) (content []byte, filename s
 	// archive creator and can be falsified (e.g. set to 0 while the entry actually
 	// expands to gigabytes). Reading through a LimitedReader ensures extraction is
 	// bounded even if the header-sum check above was defeated.
-	lr := &io.LimitedReader{R: rc, N: int64(maxBytes) + 1}
+	lr := &io.LimitedReader{R: rc, N: safeInt64Size(maxBytes) + 1}
 	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("read zip entry: %w", err)
