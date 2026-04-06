@@ -115,6 +115,27 @@ func New(cfg Config) (*Cache, error) {
 	return &Cache{db: db, root: root, baseDir: baseDir}, nil
 }
 
+// ErrOutsideCache is returned by ValidatePath when the resolved path is not
+// within the cache file subtree.
+var ErrOutsideCache = errors.New("path is outside the cache directory")
+
+// ValidatePath resolves symlinks in path and verifies it is within the cache
+// file subtree (baseDir/cache/uk/...). It returns the resolved real path on
+// success. If the path does not exist or cannot be resolved, the underlying OS
+// error is returned. If the resolved path is outside the cache file subtree,
+// ErrOutsideCache is returned.
+func (c *Cache) ValidatePath(path string) (string, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	fileRoot := filepath.Join(c.baseDir, cacheSubDir) + string(filepath.Separator)
+	if !strings.HasPrefix(real, fileRoot) {
+		return "", ErrOutsideCache
+	}
+	return real, nil
+}
+
 // Put stores body as a local file and records the filing in the index.
 // If an entry for (chNumber, docID) already exists it is overwritten.
 // Returns the local file path and the number of bytes written.

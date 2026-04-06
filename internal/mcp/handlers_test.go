@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +72,11 @@ func (m *mockFilingCache) Clear(ctx context.Context, chNumber string) (cache.Cle
 	args := m.Called(ctx, chNumber)
 	result, _ := args.Get(0).(cache.ClearResult)
 	return result, args.Error(1)
+}
+
+func (m *mockFilingCache) ValidatePath(path string) (string, error) {
+	args := m.Called(path)
+	return args.String(0), args.Error(1)
 }
 
 // callTool is a test helper that calls the given handler with the provided arguments.
@@ -624,6 +631,43 @@ func TestHandleFetchFiling(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
+
+	t.Run("should return tool error when document_url contains invalid docID characters", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — path traversal attempt in doc ID segment
+		srv := New(&mockCHService{}, &mockFilingCache{})
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": "https://document-api.company-information.service.gov.uk/document/../evil",
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+		assert.Contains(t, resultText(result), "invalid document ID")
+	})
+
+	t.Run("should return tool error when document_url contains oversized docID", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — doc ID that exceeds the 200-character limit
+		longID := strings.Repeat("a", 201)
+		srv := New(&mockCHService{}, &mockFilingCache{})
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": "https://document-api.company-information.service.gov.uk/document/" + longID,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+		assert.Contains(t, resultText(result), "invalid document ID")
+	})
 }
 
 func TestHandleGetLatest(t *testing.T) {
@@ -874,43 +918,6 @@ func TestHandleClearCache(t *testing.T) {
 	})
 }
 
-func TestIsAllowedDocumentURL(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		url  string
-		want bool
-	}{
-		// Valid CH document API URLs
-		{"https://document-api.company-information.service.gov.uk/document/abc123", true},
-		{"https://document-api.company-information.service.gov.uk/document/abc123/content", true},
-		// Relative paths — trusted CH API paths, not externally addressable
-		{"/document/abc123", true},
-		{"/document/abc123/content", true},
-		// Blocked: wrong domain
-		{"https://evil.com/document/abc123", false},
-		{"https://evil.company-information.service.gov.uk/document/abc123", false},
-		// Blocked: HTTP (not HTTPS)
-		{"http://document-api.company-information.service.gov.uk/document/abc123", false},
-		// Blocked: protocol-relative (no scheme but has host)
-		{"//document-api.company-information.service.gov.uk/document/abc123", false},
-		// Blocked: SSRF to metadata endpoint
-		{"http://169.254.169.254/document/foo", false},
-	}
-
-	for _, test := range cases {
-		t.Run(test.url, func(t *testing.T) {
-			t.Parallel()
-
-			// Act
-			got := isAllowedDocumentURL(test.url)
-
-			// Assert
-			assert.Equal(t, test.want, got, "isAllowedDocumentURL(%q)", test.url)
-		})
-	}
-}
-
 func TestFetchFilingSSRFValidation(t *testing.T) {
 	t.Parallel()
 
@@ -990,38 +997,131 @@ func TestHandleListFilingsFiltering(t *testing.T) {
 	})
 }
 
-func TestDocIDFromURL(t *testing.T) {
+func TestHandleExtractXBRLFacts(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		url    string
-		wantID string
-		wantOK bool
-	}{
-		// Content URLs (with /content suffix) — returned by fetch_filing tool input
-		{"https://api.company-information.service.gov.uk/document/abc123/content", "abc123", true},
-		{"/document/xyz789/content", "xyz789", true},
-		// Metadata URLs (without /content) — returned by list_filings / GetFilingHistory
-		{"https://document-api.company-information.service.gov.uk/document/MzAxNjM4NjM3NWFkaXF6a2N4", "MzAxNjM4NjM3NWFkaXF6a2N4", true},
-		{"/document/abc456", "abc456", true},
-		// Invalid inputs
-		{"invalid-url-no-document-segment", "", false},
-		{"https://example.com/other/path", "", false},
-		// Edge case: /document/content — the segment after "document" is the literal
-		// word "content", which is an unlikely but valid document ID at the CH API.
-		{"/document/content", "content", true},
+	// writeXHTMLInCache writes a minimal iXBRL file into a fake cache directory
+	// and returns the cache dir and the file path.
+	writeXHTMLInCache := func(t *testing.T, content string) (cacheDir, filePath string) {
+		t.Helper()
+		cacheDir = t.TempDir()
+		dir := filepath.Join(cacheDir, "cache", "uk", "12345678", "doc-001")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		filePath = filepath.Join(dir, "filing.xhtml")
+		require.NoError(t, os.WriteFile(filePath, []byte(content), 0o600))
+		return cacheDir, filePath
 	}
 
-	for _, test := range cases {
-		t.Run(test.url, func(t *testing.T) {
-			t.Parallel()
+	const minimalXHTML = `<!DOCTYPE html><html><body>
+<xbrli:context id="c1">
+  <xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity>
+  <xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period>
+</xbrli:context>
+<xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit>
+<ix:nonFraction name="frs102:Revenue" contextRef="c1" unitRef="GBP" decimals="0">100</ix:nonFraction>
+</body></html>`
 
-			// Act
-			gotID, gotOK := docIDFromURL(test.url)
+	t.Run("should return structured facts for a valid cached file", func(t *testing.T) {
+		t.Parallel()
 
-			// Assert
-			assert.Equal(t, test.wantOK, gotOK, "docIDFromURL(%q) ok", test.url)
-			assert.Equal(t, test.wantID, gotID, "docIDFromURL(%q) id", test.url)
-		})
-	}
+		// Arrange
+		_, filePath := writeXHTMLInCache(t, minimalXHTML)
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": filePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError, "unexpected tool error: %v", result.Content)
+		var out struct {
+			Facts     []map[string]any `json:"facts"`
+			Count     int              `json:"count"`
+			Truncated bool             `json:"truncated"`
+		}
+		require.NotEmpty(t, result.Content)
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &out))
+		require.Len(t, out.Facts, 1)
+		assert.Equal(t, "Revenue", out.Facts[0]["name"])
+		assert.Equal(t, 1, out.Count)
+		assert.False(t, out.Truncated)
+	})
+
+	t.Run("should return error when path is outside cache directory", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — ValidatePath signals the path is outside the cache subtree.
+		outsideDir := t.TempDir()
+		outsidePath := filepath.Join(outsideDir, "secret.xhtml")
+		require.NoError(t, os.WriteFile(outsidePath, []byte(minimalXHTML), 0o600))
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", outsidePath).Return("", cache.ErrOutsideCache)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": outsidePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "not within the cache directory")
+	})
+
+	t.Run("should return error when path resolves via symlink to outside cache directory", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — ValidatePath sees the resolved symlink target is outside the cache.
+		linkPath := filepath.Join(t.TempDir(), "filing.xhtml")
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", linkPath).Return("", cache.ErrOutsideCache)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": linkPath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "not within the cache directory")
+	})
+
+	t.Run("should return error for non-.xhtml extension", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		filingCache := &mockFilingCache{}
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": "/some/path/report.pdf"})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, ".xhtml or .html")
+	})
+
+	t.Run("should return error when local_path is missing", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		filingCache := &mockFilingCache{}
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "local_path is required")
+	})
 }

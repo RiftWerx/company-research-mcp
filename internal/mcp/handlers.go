@@ -7,14 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
-	"regexp"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
+	"github.com/riftwerx/company-research-mcp/internal/xbrl"
 )
 
 // CompanyHouseService is the subset of companyhouse.Service that MCP handlers require.
@@ -30,6 +31,7 @@ type FilingCache interface {
 	Get(ctx context.Context, chNumber, docID string) (*cache.FilingEntry, error)
 	Put(ctx context.Context, chNumber, docID, contentType, filename string, body io.Reader) (localPath string, written int64, err error)
 	Clear(ctx context.Context, chNumber string) (cache.ClearResult, error)
+	ValidatePath(path string) (string, error)
 }
 
 // defaultSearchLimit is the maximum number of search results returned when the caller does not specify a limit.
@@ -37,23 +39,6 @@ const defaultSearchLimit = 10
 
 // defaultFilingsLimit is the maximum number of filings returned when the caller does not specify a limit.
 const defaultFilingsLimit = 20
-
-// chDocumentAPIHost is the only hostname from which filing documents may be fetched.
-// document_url inputs are validated against this domain to prevent SSRF.
-const chDocumentAPIHost = "document-api.company-information.service.gov.uk"
-
-// chNumberRe matches valid Companies House numbers. English companies use 8 digits
-// (e.g. "00445790"); Scottish, Northern Irish, and LLP numbers use a 1–2 letter
-// prefix followed by digits (e.g. "SC123456", "NI012345", "OC300001"). The regex
-// accepts 6–10 alphanumeric characters to cover all known formats. Case-insensitive.
-// This allow-list guards against path traversal: ch_number is used as a directory
-// component in the cache layer and must not contain path separators or traversal sequences.
-var chNumberRe = regexp.MustCompile(`(?i)^[A-Z0-9]{6,10}$`)
-
-// validateCHNumber reports whether s is a plausible Companies House number.
-func validateCHNumber(s string) bool {
-	return chNumberRe.MatchString(s)
-}
 
 // searchResult is the minimal per-company response for search_company.
 type searchResult struct {
@@ -112,7 +97,7 @@ type clearCacheResult struct {
 func (s *Server) handleSearchCompany(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, err := req.RequireString("query")
 	if err != nil {
-		return mcp.NewToolResultError("query is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("query is required")
 	}
 	limit := req.GetInt("limit", defaultSearchLimit)
 
@@ -138,10 +123,10 @@ func (s *Server) handleSearchCompany(ctx context.Context, req mcp.CallToolReques
 func (s *Server) handleGetCompanyProfile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	chNumber, err := req.RequireString("ch_number")
 	if err != nil {
-		return mcp.NewToolResultError("ch_number is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("ch_number is required")
 	}
-	if !validateCHNumber(chNumber) {
-		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
+	if !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
 	}
 
 	profile, err := s.chSvc.GetCompanyProfile(ctx, chNumber)
@@ -175,10 +160,10 @@ func (s *Server) handleGetCompanyProfile(ctx context.Context, req mcp.CallToolRe
 func (s *Server) handleListFilings(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	chNumber, err := req.RequireString("ch_number")
 	if err != nil {
-		return mcp.NewToolResultError("ch_number is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("ch_number is required")
 	}
-	if !validateCHNumber(chNumber) {
-		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
+	if !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
 	}
 	category := req.GetString("category", "")
 	start := req.GetInt("start", 0)
@@ -219,14 +204,14 @@ func (s *Server) handleListFilings(ctx context.Context, req mcp.CallToolRequest)
 func (s *Server) handleFetchFiling(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	chNumber, err := req.RequireString("ch_number")
 	if err != nil {
-		return mcp.NewToolResultError("ch_number is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("ch_number is required")
 	}
-	if !validateCHNumber(chNumber) {
-		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
+	if !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
 	}
 	documentURL, err := req.RequireString("document_url")
 	if err != nil {
-		return mcp.NewToolResultError("document_url is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("document_url is required")
 	}
 	return s.fetchDocument(ctx, chNumber, documentURL)
 }
@@ -235,14 +220,14 @@ func (s *Server) handleFetchFiling(ctx context.Context, req mcp.CallToolRequest)
 func (s *Server) handleGetLatest(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	chNumber, err := req.RequireString("ch_number")
 	if err != nil {
-		return mcp.NewToolResultError("ch_number is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("ch_number is required")
 	}
-	if !validateCHNumber(chNumber) {
-		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
+	if !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
 	}
 	category, err := req.RequireString("category")
 	if err != nil {
-		return mcp.NewToolResultError("category is required"), nil //nolint:nilerr // MCP tool input errors are returned as tool error results, not Go errors
+		return toolError("category is required")
 	}
 
 	filings, err := s.chSvc.GetFilingHistory(ctx, chNumber, companyhouse.ListFilingsOptions{
@@ -253,10 +238,10 @@ func (s *Server) handleGetLatest(ctx context.Context, req mcp.CallToolRequest) (
 		return toolResultForCHError(err, "list filings")
 	}
 	if len(filings) == 0 {
-		return mcp.NewToolResultError("no filings found for that category"), nil
+		return toolError("no filings found for that category")
 	}
 	if filings[0].DocumentURL == "" {
-		return mcp.NewToolResultError("most recent filing in that category has no downloadable document"), nil
+		return toolError("most recent filing in that category has no downloadable document")
 	}
 
 	return s.fetchDocument(ctx, chNumber, filings[0].DocumentURL)
@@ -265,13 +250,16 @@ func (s *Server) handleGetLatest(ctx context.Context, req mcp.CallToolRequest) (
 // fetchDocument retrieves a filing from the cache or downloads it from CH.
 // Returns a cached result immediately if available; otherwise fetches from CH and stores it.
 func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string) (*mcp.CallToolResult, error) {
-	if !isAllowedDocumentURL(documentURL) {
-		return mcp.NewToolResultError("document_url must be a Companies House document API URL (document-api.company-information.service.gov.uk)"), nil
+	if !companyhouse.ValidateDocumentURL(documentURL) {
+		return toolError("document_url must be a Companies House document API URL (document-api.company-information.service.gov.uk)")
 	}
 
-	docID, ok := docIDFromURL(documentURL)
+	docID, ok := companyhouse.ParseDocumentID(documentURL)
 	if !ok {
-		return mcp.NewToolResultError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)"), nil
+		return toolError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)")
+	}
+	if !companyhouse.ValidateDocID(docID) {
+		return toolError("document_url contains an invalid document ID")
 	}
 
 	entry, err := s.cache.Get(ctx, chNumber, docID)
@@ -307,14 +295,14 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 		zipData, readErr := readZipBody(doc.Body, cache.MaxFileSizeBytes)
 		if errors.Is(readErr, errZipTooLarge) {
 			// Too-large is a user-facing condition; other read errors are unexpected and propagate.
-			return mcp.NewToolResultError(readErr.Error()), nil
+			return toolError(readErr.Error())
 		}
 		if readErr != nil {
 			return nil, fmt.Errorf("read zip: %w", readErr)
 		}
 		extracted, extractedName, extractedType, extractErr := extractFromZip(zipData, cache.MaxFileSizeBytes)
 		if extractErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("unpack zip: %s", extractErr)), nil
+			return toolError(fmt.Sprintf("unpack zip: %s", extractErr))
 		}
 		doc.Body = io.NopCloser(bytes.NewReader(extracted))
 		doc.ContentType = extractedType
@@ -337,8 +325,8 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 // handleClearCache implements the clear_cache tool.
 func (s *Server) handleClearCache(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	chNumber := req.GetString("ch_number", "")
-	if chNumber != "" && !validateCHNumber(chNumber) {
-		return mcp.NewToolResultError("ch_number contains invalid characters"), nil
+	if chNumber != "" && !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
 	}
 
 	cleared, err := s.cache.Clear(ctx, chNumber)
@@ -353,19 +341,72 @@ func (s *Server) handleClearCache(ctx context.Context, req mcp.CallToolRequest) 
 	})
 }
 
+// handleExtractXBRLFacts implements the extract_xbrl_facts tool.
+func (s *Server) handleExtractXBRLFacts(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	localPath, err := req.RequireString("local_path")
+	if err != nil {
+		return toolError("local_path is required")
+	}
+	ext := strings.ToLower(filepath.Ext(localPath))
+	if ext != ".xhtml" && ext != ".html" {
+		return toolError("local_path must point to an .xhtml or .html file")
+	}
+
+	// Resolve symlinks and verify the path is within the cache file subtree.
+	// This prevents reading arbitrary files or escaping via symlinks.
+	realPath, pathErr := s.cache.ValidatePath(localPath)
+	if errors.Is(pathErr, cache.ErrOutsideCache) {
+		return toolError("local_path is not within the cache directory")
+	}
+	if pathErr != nil {
+		return toolError("local_path does not point to a readable file")
+	}
+
+	info, statErr := os.Stat(realPath)
+	if statErr != nil || !info.Mode().IsRegular() {
+		return toolError("local_path does not point to a readable file")
+	}
+
+	opts := xbrl.Options{
+		NamePrefix:       req.GetString("name_prefix", ""),
+		IncludeTextFacts: req.GetBool("include_text_facts", false),
+	}
+	facts, truncated, parseErr := xbrl.ParseFacts(realPath, opts)
+	if parseErr != nil {
+		return toolError(fmt.Sprintf("parse iXBRL: %s", parseErr))
+	}
+	return toolResultJSON(xbrlFactsResult{Facts: facts, Count: len(facts), Truncated: truncated})
+}
+
+// xbrlFactsResult is the response envelope for extract_xbrl_facts.
+// Truncated is true when the document contained more facts than the MaxFacts cap;
+// callers should use name_prefix to narrow the query when this occurs.
+type xbrlFactsResult struct {
+	Facts     []xbrl.Fact `json:"facts"`
+	Count     int         `json:"count"`
+	Truncated bool        `json:"truncated"`
+}
+
 // toolResultForCHError maps CH sentinel errors to tool error results.
 // Returns (errResult, nil) for known errors, (nil, wrappedErr) for unexpected errors.
 func toolResultForCHError(err error, op string) (*mcp.CallToolResult, error) {
 	if errors.Is(err, companyhouse.ErrNotFound) {
-		return mcp.NewToolResultError("not found"), nil
+		return toolError("not found")
 	}
 	if errors.Is(err, companyhouse.ErrUnauthorized) {
-		return mcp.NewToolResultError("CH API key invalid or missing"), nil
+		return toolError("CH API key invalid or missing")
 	}
 	if errors.Is(err, companyhouse.ErrRateLimited) {
-		return mcp.NewToolResultError("CH rate limit hit, retry shortly"), nil
+		return toolError("CH rate limit hit, retry shortly")
 	}
 	return nil, fmt.Errorf("%s: %w", op, err)
+}
+
+// toolError wraps a user-facing message as a tool error result.
+// MCP tool input and validation errors are signalled as tool error results (IsError=true),
+// not as Go errors, so the MCP client receives a structured error rather than a transport failure.
+func toolError(msg string) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultError(msg), nil
 }
 
 // toolResultJSON marshals v to JSON and wraps it in a text tool result.
@@ -375,37 +416,4 @@ func toolResultJSON(v any) (*mcp.CallToolResult, error) {
 		return nil, fmt.Errorf("marshal result: %w", err)
 	}
 	return mcp.NewToolResultText(string(data)), nil
-}
-
-// isAllowedDocumentURL returns true if rawURL is a valid CH document API URL.
-// Absolute URLs (those with a scheme or host) must use HTTPS and resolve to
-// chDocumentAPIHost. Relative paths (no scheme, no host) pass through; they
-// cannot be used for SSRF because Go's HTTP client rejects requests without a host.
-func isAllowedDocumentURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	if u.Scheme != "" || u.Host != "" {
-		return u.Scheme == "https" && u.Hostname() == chDocumentAPIHost
-	}
-	return true // relative path — no host, so HTTP client will reject it
-}
-
-// docIDFromURL extracts the document ID from a CH document URL.
-// Handles both the metadata URL form (.../document/{id}) and the content URL form
-// (.../document/{id}/content). Returns the ID and true on success, or "", false if
-// the URL cannot be parsed or does not contain a "document" path segment followed by an ID.
-func docIDFromURL(documentURL string) (string, bool) {
-	u, err := url.Parse(documentURL)
-	if err != nil {
-		return "", false
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	for i, p := range parts {
-		if p == "document" && i+1 < len(parts) && parts[i+1] != "" {
-			return parts[i+1], true
-		}
-	}
-	return "", false
 }

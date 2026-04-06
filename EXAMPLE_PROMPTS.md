@@ -42,6 +42,17 @@ Example prompts for each tool provided by this MCP server.
 - "Fetch the most recent confirmation statement for company 01234567"
 - "Download the latest accounts filing for company 09876543 and summarise it"
 
+## `extract_xbrl_facts`
+
+> Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON.
+> Use the `local_path` returned by `fetch_filing` or `get_latest` when `content_type` is `application/xhtml+xml`.
+
+- "Extract all financial facts from the iXBRL file at /path/to/filing.xhtml"
+- "Get only the revenue facts from the cached iXBRL report at /path/to/filing.xhtml"
+- "Extract facts with name prefix 'Revenue' from the accounts I just downloaded"
+- "Parse the iXBRL file and include text facts such as director names"
+- "The result was truncated — re-run with name_prefix='Assets' to get just the asset facts"
+
 ## `clear_cache`
 
 > Delete cached filing documents.
@@ -62,3 +73,4 @@ Prompts that chain several tools together.
 - "Find 'Dyson' and compare the SIC codes and registered addresses of any matching companies" — `search_company` → `get_company_profile` (multiple)
 - "Get the latest accounts and latest confirmation statement for company 00445790, then clear its cache" — `get_latest` (×2) → `clear_cache`
 - "Which directors are listed in the most recent confirmation statement for 'Arm Holdings'?" — `search_company` → `get_latest`
+- "Download the latest accounts for 'Tesco' and extract all revenue and profit facts" — `search_company` → `get_latest` → `extract_xbrl_facts`
