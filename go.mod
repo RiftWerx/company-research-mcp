@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/stretchr/testify v1.10.0
+	golang.org/x/net v0.45.0
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.48.0
 )
@@ -21,7 +22,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/net v0.45.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.70.0 // indirect
