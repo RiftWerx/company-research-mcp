@@ -77,6 +77,25 @@ func getLatestTool() mcp.Tool {
 	)
 }
 
+// extractXBRLFactsTool returns the tool definition for extract_xbrl_facts.
+func extractXBRLFactsTool() mcp.Tool {
+	return mcp.NewTool("extract_xbrl_facts",
+		mcp.WithDescription("Parse a cached iXBRL .xhtml file and return structured financial facts as JSON. "+
+			"Use the local_path returned by fetch_filing or get_latest when content_type is application/xhtml+xml. "+
+			"Returns {facts, count, truncated}. When truncated is true the document contained more facts than the cap — use name_prefix to narrow the query and retrieve the facts you need."),
+		mcp.WithString("local_path",
+			mcp.Required(),
+			mcp.Description("Absolute path to a cached iXBRL .xhtml file, as returned by fetch_filing or get_latest"),
+		),
+		mcp.WithString("name_prefix",
+			mcp.Description("Optional concept name prefix filter. Only facts whose name starts with this value are returned (e.g. 'Revenue' returns all Revenue* facts). Case-sensitive. Applies to both numeric and text facts."),
+		),
+		mcp.WithBoolean("include_text_facts",
+			mcp.Description("Include ix:nonNumeric text facts such as company name and director names. Default false — only numeric ix:nonFraction facts are returned. name_prefix filtering applies to text facts when this is true."),
+		),
+	)
+}
+
 // clearCacheTool returns the tool definition for clear_cache.
 func clearCacheTool() mcp.Tool {
 	return mcp.NewTool("clear_cache",

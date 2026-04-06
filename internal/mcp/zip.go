@@ -17,11 +17,13 @@ import (
 var errZipTooLarge = errors.New("zip filing exceeds maximum size limit")
 
 // safeInt64Size converts a uint64 byte count to int64 for use with io.LimitedReader.
-// If n exceeds math.MaxInt64 it returns math.MaxInt64, which is the largest limit
-// LimitedReader can enforce.
+// The callers pass safeInt64Size(n)+1 to LimitedReader so they can detect when the
+// limit is exactly reached. To prevent that +1 from overflowing to math.MinInt64
+// (which would make LimitedReader return EOF immediately and bypass the check), the
+// return value is capped at math.MaxInt64-1, leaving room for the +1.
 func safeInt64Size(n uint64) int64 {
-	if n >= math.MaxInt64 {
-		return math.MaxInt64
+	if n >= math.MaxInt64-1 {
+		return math.MaxInt64 - 1
 	}
 	return int64(n)
 }
@@ -53,14 +55,18 @@ func extractFromZip(zipData []byte, maxBytes uint64) (content []byte, filename s
 	}
 
 	// Zip bomb defence: check total uncompressed size before extracting anything.
+	// Without this guard, adding f.UncompressedSize64 to totalUncompressed could
+	// wrap around (uint64 overflow); rejecting before the addition keeps the
+	// invariant totalUncompressed ≤ maxBytes, which also ensures the subtraction
+	// maxBytes-totalUncompressed cannot underflow.
 	var totalUncompressed uint64
 	for _, f := range r.File {
 		if !f.FileInfo().IsDir() {
+			if f.UncompressedSize64 > maxBytes-totalUncompressed {
+				return nil, "", "", fmt.Errorf("zip uncompressed content exceeds %d-byte limit", maxBytes)
+			}
 			totalUncompressed += f.UncompressedSize64
 		}
-	}
-	if totalUncompressed > maxBytes {
-		return nil, "", "", fmt.Errorf("zip uncompressed content (%d bytes) exceeds %d-byte limit", totalUncompressed, maxBytes)
 	}
 
 	// Priority tiers for document selection.

@@ -138,6 +138,7 @@ Add to `~/.continue/config.json` under `mcpServers`:
 | `list_filings` | List filing history for a company (filings without a downloadable document are excluded) |
 | `fetch_filing` | Download a specific filing document (`document_url` must be a `document-api.company-information.service.gov.uk` URL) |
 | `get_latest` | Fetch the most recent filing of a given category |
+| `extract_xbrl_facts` | Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON |
 | `clear_cache` | Delete cached filing documents |
 
 ### Document formats
@@ -145,6 +146,19 @@ Add to `~/.continue/config.json` under `mcpServers`:
 Filings are returned as **PDF** or **iXBRL** (`.xhtml`) depending on what Companies House provides.
 When a filing is served as a zip archive the primary document is extracted automatically — the
 `local_path` in the response points to the extracted file, not the original zip.
+
+### Extracting financial data from iXBRL filings
+
+When `fetch_filing` or `get_latest` returns `content_type: application/xhtml+xml`, the file is an
+iXBRL document containing tagged financial data. Use `extract_xbrl_facts` to parse it:
+
+```
+extract_xbrl_facts(local_path=<path from fetch_filing>)
+```
+
+Returns `{facts, count, truncated}`. Each fact has `name`, `value`, `period`, and `unit`.
+When `truncated` is `true` the document contained more than 2,000 facts — use `name_prefix` to
+narrow the query (e.g. `name_prefix="Revenue"` returns only Revenue-related facts).
 
 ### Local cache
 
