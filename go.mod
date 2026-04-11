@@ -3,7 +3,7 @@ module github.com/riftwerx/company-research-mcp
 go 1.26.2
 
 require (
-	github.com/mark3labs/mcp-go v0.47.0
+	github.com/mark3labs/mcp-go v0.47.1
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/net v0.53.0
 	golang.org/x/time v0.15.0
