@@ -1124,4 +1124,75 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 		assert.True(t, result.IsError)
 		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "local_path is required")
 	})
+
+	t.Run("should include render_type native_ixbrl for a plain iXBRL document", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — standard iXBRL with normal prose: no pdf2htmlEX markers.
+		nativeXHTML := `<!DOCTYPE html><html><body>
+<xbrli:context id="c1">
+  <xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity>
+  <xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period>
+</xbrli:context>
+<xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit>
+<p>The company delivered strong results in the financial year ended December 2024.</p>
+<ix:nonFraction name="frs102:Revenue" contextRef="c1" unitRef="GBP" decimals="0">100</ix:nonFraction>
+</body></html>`
+		_, filePath := writeXHTMLInCache(t, nativeXHTML)
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": filePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError)
+		var out struct {
+			RenderType string   `json:"render_type"`
+			Warnings   []string `json:"warnings"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &out))
+		assert.Equal(t, "native_ixbrl", out.RenderType)
+		assert.Empty(t, out.Warnings)
+	})
+
+	t.Run("should include render_type pdf_rendered and warnings when pdf2htmlEX markers are present", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — document contains the canonical pdf2htmlEX page wrapper <div class="pf">.
+		pdfXHTML := `<!DOCTYPE html><html><body>
+<xbrli:context id="c1">
+  <xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity>
+  <xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period>
+</xbrli:context>
+<xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit>
+<div class="pf"><div class="pc"><span class="t">A</span></div></div>
+<ix:nonFraction name="frs102:Revenue" contextRef="c1" unitRef="GBP" decimals="0">100</ix:nonFraction>
+</body></html>`
+		_, filePath := writeXHTMLInCache(t, pdfXHTML)
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": filePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError)
+		var out struct {
+			RenderType string   `json:"render_type"`
+			Warnings   []string `json:"warnings"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &out))
+		assert.Equal(t, "pdf_rendered", out.RenderType)
+		require.Len(t, out.Warnings, 1)
+		assert.Contains(t, out.Warnings[0], "narrative text")
+	})
 }

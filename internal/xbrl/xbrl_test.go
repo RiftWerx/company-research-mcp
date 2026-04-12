@@ -74,7 +74,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -94,7 +95,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -111,7 +113,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -128,7 +131,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -145,7 +149,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -162,7 +167,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -179,7 +185,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -196,7 +203,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -213,7 +221,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -232,7 +241,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{NamePrefix: "Rev"})
+		result, err := ParseFacts(path, Options{NamePrefix: "Rev"})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -249,11 +259,11 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.NoError(t, err)
-		assert.Empty(t, facts)
+		assert.Empty(t, result.Facts)
 	})
 
 	t.Run("should concatenate span-split number text", func(t *testing.T) {
@@ -265,7 +275,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -282,7 +293,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -301,7 +313,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{IncludeTextFacts: false})
+		result, err := ParseFacts(path, Options{IncludeTextFacts: false})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -318,7 +331,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		result, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -340,7 +354,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{IncludeTextFacts: true, NamePrefix: "Company"})
+		result, err := ParseFacts(path, Options{IncludeTextFacts: true, NamePrefix: "Company"})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -355,11 +370,11 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, `<!DOCTYPE html><html><body><p>No XBRL here.</p></body></html>`)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.NoError(t, err)
-		assert.Empty(t, facts)
+		assert.Empty(t, result.Facts)
 	})
 
 	t.Run("should return error for non-existent file", func(t *testing.T) {
@@ -369,7 +384,7 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "missing.xhtml")
 
 		// Act
-		_, _, err := ParseFacts(path, Options{})
+		_, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.Error(t, err)
@@ -392,7 +407,7 @@ func TestParseXBRLFacts(t *testing.T) {
 		require.NoError(t, f.Close())
 
 		// Act
-		_, _, err := ParseFacts(path, Options{})
+		_, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.Error(t, err)
@@ -408,11 +423,11 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert — out-of-bounds scale causes the fact to be silently skipped (not a hard error).
 		require.NoError(t, err)
-		assert.Empty(t, facts)
+		assert.Empty(t, result.Facts)
 	})
 
 	t.Run("should cap output at MaxFacts", func(t *testing.T) {
@@ -428,12 +443,12 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, `<!DOCTYPE html><html><body>`+sb.String()+`</body></html>`)
 
 		// Act
-		facts, truncated, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.NoError(t, err)
-		assert.Len(t, facts, MaxFacts)
-		assert.True(t, truncated, "truncated should be true when document exceeds MaxFacts")
+		assert.Len(t, result.Facts, MaxFacts)
+		assert.True(t, result.Truncated, "truncated should be true when document exceeds MaxFacts")
 	})
 
 	t.Run("should ignore link:schemaRef and other external reference elements", func(t *testing.T) {
@@ -453,7 +468,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -470,11 +486,11 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert — Inf cannot be marshaled to JSON; fact must be silently dropped.
 		require.NoError(t, err)
-		assert.Empty(t, facts)
+		assert.Empty(t, result.Facts)
 	})
 
 	t.Run("should skip numeric fact when scale causes overflow to Inf", func(t *testing.T) {
@@ -486,11 +502,11 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
 
 		// Assert
 		require.NoError(t, err)
-		assert.Empty(t, facts)
+		assert.Empty(t, result.Facts)
 	})
 
 	t.Run("should cap context map at maxContexts", func(t *testing.T) {
@@ -510,7 +526,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, `<!DOCTYPE html><html><body>`+sb.String()+`</body></html>`)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{})
+		result, err := ParseFacts(path, Options{})
+		facts := result.Facts
 
 		// Assert — the fact is still returned; its period is just empty (context was not stored).
 		require.NoError(t, err)
@@ -528,7 +545,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		result, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -550,7 +568,8 @@ func TestParseXBRLFacts(t *testing.T) {
 		path := writeXHTML(t, doc)
 
 		// Act
-		facts, _, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		result, err := ParseFacts(path, Options{IncludeTextFacts: true})
+		facts := result.Facts
 
 		// Assert
 		require.NoError(t, err)
@@ -559,5 +578,115 @@ func TestParseXBRLFacts(t *testing.T) {
 		require.True(t, ok)
 		assert.True(t, strings.HasSuffix(text, "…"), "truncated value must end with ellipsis")
 		assert.LessOrEqual(t, len([]rune(text)), maxTextFactLen+1, "truncated rune count must not exceed cap (+ellipsis rune)")
+	})
+}
+
+func TestParseFacts_RenderTypeDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("should return native_ixbrl for a plain iXBRL document", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — standard iXBRL with normal prose text, no pdf2htmlEX markers.
+		doc := minimalDoc(contextInstant, unitGBP, `
+			<p>This is the annual report for Acme Ltd. The company had a strong year with revenue
+			growth across all segments. Management expects continued performance in the coming year.</p>
+			<ix:nonFraction name="frs102:Revenue" contextRef="ctx-instant" unitRef="GBP" decimals="0">100000</ix:nonFraction>
+		`)
+		path := writeXHTML(t, doc)
+
+		// Act
+		result, err := ParseFacts(path, Options{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, RenderTypeNativeIXBRL, result.RenderType)
+	})
+
+	t.Run("should return pdf_rendered when <div class=\"pf\"> is present", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — pdf2htmlEX wraps each page in <div class="pf">.
+		doc := minimalDoc(contextInstant, unitGBP, `
+			<div class="pf">
+				<div class="pc">
+					<span class="t">A</span><span class="t">n</span><span class="t">n</span>
+				</div>
+			</div>
+			<ix:nonFraction name="frs102:Revenue" contextRef="ctx-instant" unitRef="GBP" decimals="0">100</ix:nonFraction>
+		`)
+		path := writeXHTML(t, doc)
+
+		// Act
+		result, err := ParseFacts(path, Options{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, RenderTypePDFRendered, result.RenderType)
+	})
+
+	t.Run("should return pdf_rendered when <div> has multiple classes including pf", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — class attribute may contain multiple space-separated tokens.
+		doc := minimalDoc(contextInstant, unitGBP,
+			`<div class="page pf active"><span>A</span></div>
+			<ix:nonFraction name="frs102:Revenue" contextRef="ctx-instant" unitRef="GBP" decimals="0">1</ix:nonFraction>`)
+		path := writeXHTML(t, doc)
+
+		// Act
+		result, err := ParseFacts(path, Options{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, RenderTypePDFRendered, result.RenderType)
+	})
+
+	t.Run("should return pdf_rendered when text node fragmentation ratio exceeds threshold", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — simulate character-level text fragmentation: each span holds one character,
+		// producing many short text nodes. 200 single-char spans → ratio well above 0.8.
+		var spans strings.Builder
+		for range 200 {
+			spans.WriteString(`<span>x</span>`)
+		}
+		doc := minimalDoc(contextInstant, unitGBP,
+			`<p>`+spans.String()+`</p>
+			<ix:nonFraction name="frs102:Revenue" contextRef="ctx-instant" unitRef="GBP" decimals="0">1</ix:nonFraction>`)
+		path := writeXHTML(t, doc)
+
+		// Act
+		result, err := ParseFacts(path, Options{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, RenderTypePDFRendered, result.RenderType)
+	})
+
+	t.Run("should return native_ixbrl when short text nodes are present but below threshold", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — iXBRL documents naturally have some span-split numbers and punctuation.
+		// 20 single-char spans + 200 long words → short ratio ~9%, well below 80%.
+		var content strings.Builder
+		for range 20 {
+			content.WriteString(`<span>1</span>`)
+		}
+		// Add substantial long-text content to keep the ratio low.
+		for range 200 {
+			content.WriteString(`<span>This is a normal sentence fragment.</span>`)
+		}
+		doc := minimalDoc(contextInstant, unitGBP,
+			`<div>`+content.String()+`</div>
+			<ix:nonFraction name="frs102:Revenue" contextRef="ctx-instant" unitRef="GBP" decimals="0">1</ix:nonFraction>`)
+		path := writeXHTML(t, doc)
+
+		// Act
+		result, err := ParseFacts(path, Options{})
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, RenderTypeNativeIXBRL, result.RenderType)
 	})
 }

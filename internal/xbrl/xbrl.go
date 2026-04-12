@@ -46,6 +46,34 @@ const maxUnits = 10_000
 // a single fact from producing an oversized MCP response.
 const maxTextFactLen = 500
 
+// pdfRenderedTextRatio is the minimum fraction of non-empty text nodes that must
+// be ≤ pdfRenderedMaxNodeLen runes for the fragmentation-ratio heuristic to trigger.
+const pdfRenderedTextRatio = 0.8
+
+// pdfRenderedMaxNodeLen is the rune-length threshold used by the fragmentation-ratio
+// heuristic. Text nodes shorter than or equal to this length count as "short".
+const pdfRenderedMaxNodeLen = 10
+
+// RenderTypeNativeIXBRL indicates the document is a standard iXBRL filing with
+// accessible narrative text.
+const RenderTypeNativeIXBRL = "native_ixbrl"
+
+// RenderTypePDFRendered indicates the document was produced by a PDF-to-HTML
+// converter (e.g. pdf2htmlEX). Structured XBRL facts are extractable, but
+// narrative prose is fragmented into character-level nodes or embedded images
+// and is not reliably readable as text.
+const RenderTypePDFRendered = "pdf_rendered"
+
+// ParseResult holds the output of ParseFacts.
+type ParseResult struct {
+	// Facts is the slice of extracted XBRL facts. Always non-nil.
+	Facts []Fact
+	// Truncated is true when the document contained more facts than MaxFacts.
+	Truncated bool
+	// RenderType is RenderTypeNativeIXBRL or RenderTypePDFRendered.
+	RenderType string
+}
+
 // Fact is a single XBRL fact extracted from an iXBRL document.
 type Fact struct {
 	Name   string `json:"name"`
@@ -67,14 +95,14 @@ type Options struct {
 	IncludeTextFacts bool
 }
 
-// ParseFacts parses the iXBRL .xhtml file at path and returns structured
-// financial facts. At most MaxFacts facts are returned; truncated is true when
-// the document contained more facts than the cap. Files larger than
+// ParseFacts parses the iXBRL .xhtml file at path and returns a ParseResult.
+// At most MaxFacts facts are returned; ParseResult.Truncated is true when the
+// document contained more facts than the cap. Files larger than
 // MaxFileSizeBytes are rejected without reading their content.
-func ParseFacts(path string, opts Options) (facts []Fact, truncated bool, err error) {
+func ParseFacts(path string, opts Options) (ParseResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("open file: %w", err)
+		return ParseResult{}, fmt.Errorf("open file: %w", err)
 	}
 	defer f.Close()
 
@@ -82,10 +110,10 @@ func ParseFacts(path string, opts Options) (facts []Fact, truncated bool, err er
 	// os.Stat call and the subsequent read.
 	info, err := f.Stat()
 	if err != nil {
-		return nil, false, fmt.Errorf("stat file: %w", err)
+		return ParseResult{}, fmt.Errorf("stat file: %w", err)
 	}
 	if info.Size() > MaxFileSizeBytes {
-		return nil, false, fmt.Errorf("file size %d bytes exceeds limit of %d bytes", info.Size(), MaxFileSizeBytes)
+		return ParseResult{}, fmt.Errorf("file size %d bytes exceeds limit of %d bytes", info.Size(), MaxFileSizeBytes)
 	}
 
 	// Wrap in LimitReader as a second line of defence: even if the file is
@@ -93,13 +121,14 @@ func ParseFacts(path string, opts Options) (facts []Fact, truncated bool, err er
 	lr := io.LimitReader(f, MaxFileSizeBytes+1)
 	root, err := html.Parse(lr)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse HTML: %w", err)
+		return ParseResult{}, fmt.Errorf("parse HTML: %w", err)
 	}
 
 	contexts := buildContextMap(root)
 	units := buildUnitMap(root)
-	facts, truncated = collectFacts(root, contexts, units, opts)
-	return facts, truncated, nil
+	renderType := detectRenderType(root)
+	facts, truncated := collectFacts(root, contexts, units, opts)
+	return ParseResult{Facts: facts, Truncated: truncated, RenderType: renderType}, nil
 }
 
 // buildContextMap walks the DOM and returns a map from xbrli:context id to a
@@ -334,6 +363,52 @@ func parseTextFact(n *html.Node, contexts map[string]string, namePrefix string) 
 		Value:  text,
 		Period: contexts[attrVal(n, "contextref")],
 	}, true
+}
+
+// detectRenderType inspects the DOM for signatures of PDF-to-HTML conversion
+// and returns RenderTypePDFRendered or RenderTypeNativeIXBRL.
+//
+// Two heuristics are applied in order; the first that fires wins:
+//  1. Structural: presence of a <div class="pf"> element — the canonical
+//     per-page wrapper emitted by pdf2htmlEX.
+//  2. Fragmentation ratio: if more than pdfRenderedTextRatio of all non-empty
+//     text nodes are ≤ pdfRenderedMaxNodeLen runes, the document's text is
+//     character-split and narrative is not readable as prose.
+func detectRenderType(root *html.Node) string {
+	// Both heuristics are collected in a single DOM walk.
+	// Heuristic 1: pdf2htmlEX page wrapper (<div class="pf">).
+	// Heuristic 2: high ratio of very short text nodes (character-level fragmentation).
+	var hasPFDiv bool
+	var total, short int
+	walkTree(root, func(n *html.Node) {
+		switch n.Type {
+		case html.ElementNode:
+			if !hasPFDiv && n.Data == "div" {
+				for _, field := range strings.Fields(attrVal(n, "class")) {
+					if field == "pf" {
+						hasPFDiv = true
+						break
+					}
+				}
+			}
+		case html.TextNode:
+			trimmed := strings.TrimSpace(n.Data)
+			if trimmed == "" {
+				return
+			}
+			total++
+			if len([]rune(trimmed)) <= pdfRenderedMaxNodeLen {
+				short++
+			}
+		}
+	})
+	if hasPFDiv {
+		return RenderTypePDFRendered
+	}
+	if total > 0 && float64(short)/float64(total) > pdfRenderedTextRatio {
+		return RenderTypePDFRendered
+	}
+	return RenderTypeNativeIXBRL
 }
 
 // walkTree calls fn for every node in the subtree rooted at n, in depth-first
