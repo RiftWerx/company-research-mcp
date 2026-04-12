@@ -82,7 +82,9 @@ func extractXBRLFactsTool() mcp.Tool {
 	return mcp.NewTool("extract_xbrl_facts",
 		mcp.WithDescription("Parse a cached iXBRL .xhtml file and return structured financial facts as JSON. "+
 			"Use the local_path returned by fetch_filing or get_latest when content_type is application/xhtml+xml. "+
-			"Returns {facts, count, truncated}. When truncated is true the document contained more facts than the cap — use name_prefix to narrow the query and retrieve the facts you need."),
+			"Returns {facts, count, truncated, render_type, warnings?}. "+
+			"render_type is \"native_ixbrl\" or \"pdf_rendered\"; when \"pdf_rendered\", a warnings array explains that narrative text is not reliably accessible. "+
+			"When truncated is true the document contained more facts than the cap — use name_prefix to narrow the query and retrieve the facts you need."),
 		mcp.WithString("local_path",
 			mcp.Required(),
 			mcp.Description("Absolute path to a cached iXBRL .xhtml file, as returned by fetch_filing or get_latest"),

@@ -371,20 +371,33 @@ func (s *Server) handleExtractXBRLFacts(_ context.Context, req mcp.CallToolReque
 		NamePrefix:       req.GetString("name_prefix", ""),
 		IncludeTextFacts: req.GetBool("include_text_facts", false),
 	}
-	facts, truncated, parseErr := xbrl.ParseFacts(realPath, opts)
+	parsed, parseErr := xbrl.ParseFacts(realPath, opts)
 	if parseErr != nil {
 		return toolError(fmt.Sprintf("parse iXBRL: %s", parseErr))
 	}
-	return toolResultJSON(xbrlFactsResult{Facts: facts, Count: len(facts), Truncated: truncated})
+	res := xbrlFactsResult{
+		Facts:      parsed.Facts,
+		Count:      len(parsed.Facts),
+		Truncated:  parsed.Truncated,
+		RenderType: parsed.RenderType,
+	}
+	if parsed.RenderType == xbrl.RenderTypePDFRendered {
+		res.Warnings = []string{"narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"}
+	}
+	return toolResultJSON(res)
 }
 
 // xbrlFactsResult is the response envelope for extract_xbrl_facts.
 // Truncated is true when the document contained more facts than the MaxFacts cap;
 // callers should use name_prefix to narrow the query when this occurs.
+// RenderType is "native_ixbrl" or "pdf_rendered"; Warnings is non-empty when
+// narrative text is not reliably accessible.
 type xbrlFactsResult struct {
-	Facts     []xbrl.Fact `json:"facts"`
-	Count     int         `json:"count"`
-	Truncated bool        `json:"truncated"`
+	Facts      []xbrl.Fact `json:"facts"`
+	Count      int         `json:"count"`
+	Truncated  bool        `json:"truncated"`
+	RenderType string      `json:"render_type"`
+	Warnings   []string    `json:"warnings,omitempty"`
 }
 
 // toolResultForCHError maps CH sentinel errors to tool error results.

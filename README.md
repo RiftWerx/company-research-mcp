@@ -138,7 +138,7 @@ Add to `~/.continue/config.json` under `mcpServers`:
 | `list_filings` | List filing history for a company (filings without a downloadable document are excluded) |
 | `fetch_filing` | Download a specific filing document (`document_url` must be a `document-api.company-information.service.gov.uk` URL) |
 | `get_latest` | Fetch the most recent filing of a given category |
-| `extract_xbrl_facts` | Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON |
+| `extract_xbrl_facts` | Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON; also reports whether the document is native iXBRL or PDF-rendered |
 | `clear_cache` | Delete cached filing documents |
 
 ### Document formats
@@ -156,9 +156,15 @@ iXBRL document containing tagged financial data. Use `extract_xbrl_facts` to par
 extract_xbrl_facts(local_path=<path from fetch_filing>)
 ```
 
-Returns `{facts, count, truncated}`. Each fact has `name`, `value`, `period`, and `unit`.
-When `truncated` is `true` the document contained more than 2,000 facts — use `name_prefix` to
-narrow the query (e.g. `name_prefix="Revenue"` returns only Revenue-related facts).
+Returns `{facts, count, truncated, render_type, warnings?}`. Each fact has `name`, `value`,
+`period`, and `unit`. When `truncated` is `true` the document contained more than 2,000 facts —
+use `name_prefix` to narrow the query (e.g. `name_prefix="Revenue"` returns only Revenue-related
+facts).
+
+`render_type` is `"native_ixbrl"` for standard filings or `"pdf_rendered"` for filings produced
+by a PDF-to-HTML converter (e.g. `pdf2htmlEX`). PDF-rendered filings have fully extractable XBRL
+facts but fragmented narrative text (MD&A, notes); when detected a `warnings` array explains this
+and the document will not be readable as prose.
 
 ### Local cache
 
