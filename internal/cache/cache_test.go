@@ -352,3 +352,235 @@ func TestClear(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestPutZipEntries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("should write all files to disk and return the primary path", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: true},
+			{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"), IsPrimary: false},
+		}
+
+		// Act
+		primaryPath, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, len(entries))
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, "report.xhtml", filepath.Base(primaryPath))
+		assert.FileExists(t, primaryPath)
+		pdfPath := filepath.Join(filepath.Dir(primaryPath), "report.pdf")
+		assert.FileExists(t, pdfPath)
+	})
+
+	t.Run("should index primary in filings for backward-compat Get", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: true},
+			{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"), IsPrimary: false},
+		}
+
+		// Act
+		_, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, len(entries))
+		require.NoError(t, err)
+		entry, err := c.Get(context.Background(), "03033634", "T01")
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, "application/xhtml+xml", entry.ContentType)
+		assert.Equal(t, "report.xhtml", filepath.Base(entry.LocalPath))
+	})
+
+	t.Run("should index all entries in zip_entries and preserve total_in_archive", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — archive has 5 files but only 2 are extracted (simulating truncation)
+		const totalInArchive = 5
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: true},
+			{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"), IsPrimary: false},
+		}
+
+		// Act
+		_, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, totalInArchive)
+		require.NoError(t, err)
+		records, total, err := c.GetZipEntries(context.Background(), "03033634", "T01")
+
+		// Assert
+		require.NoError(t, err)
+		require.Len(t, records, 2)
+		assert.Equal(t, totalInArchive, total)
+		assert.True(t, records[0].IsPrimary)
+		assert.Equal(t, "report.xhtml", records[0].Filename)
+		assert.False(t, records[1].IsPrimary)
+		assert.Equal(t, "report.pdf", records[1].Filename)
+		assert.Positive(t, records[1].FileSize)
+		assert.FileExists(t, records[1].LocalPath)
+	})
+
+	t.Run("should overwrite entries on repeat call", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		first := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<v1/>"), IsPrimary: true},
+		}
+		second := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<v2/>"), IsPrimary: true},
+		}
+
+		// Act
+		_, err := c.PutZipEntries(context.Background(), "03033634", "T01", first, len(first))
+		require.NoError(t, err)
+		primaryPath, err := c.PutZipEntries(context.Background(), "03033634", "T01", second, len(second))
+		require.NoError(t, err)
+
+		// Assert
+		got, readErr := os.ReadFile(primaryPath)
+		require.NoError(t, readErr)
+		assert.Equal(t, "<v2/>", string(got))
+	})
+
+	t.Run("should return error when no entry is marked primary", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: false},
+		}
+
+		// Act
+		_, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, len(entries))
+
+		// Assert
+		assert.ErrorContains(t, err, "primary")
+	})
+}
+
+func TestGetZipEntries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("should return nil for a non-zip filing", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		_, _, err := c.Put(context.Background(), "00445790", "abc123", "application/pdf", "", bytes.NewReader([]byte("data")))
+		require.NoError(t, err)
+
+		// Act
+		records, total, err := c.GetZipEntries(context.Background(), "00445790", "abc123")
+
+		// Assert
+		require.NoError(t, err)
+		assert.Nil(t, records)
+		assert.Zero(t, total)
+	})
+
+	t.Run("should return nil for an unknown document", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+
+		// Act
+		records, total, err := c.GetZipEntries(context.Background(), "00445790", "notexist")
+
+		// Assert
+		require.NoError(t, err)
+		assert.Nil(t, records)
+		assert.Zero(t, total)
+	})
+
+	t.Run("should return nil after Clear removes the filing", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: true},
+			{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"), IsPrimary: false},
+		}
+		_, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, len(entries))
+		require.NoError(t, err)
+
+		// Act
+		_, err = c.Clear(context.Background(), "03033634")
+		require.NoError(t, err)
+		records, _, err := c.GetZipEntries(context.Background(), "03033634", "T01")
+
+		// Assert
+		require.NoError(t, err)
+		assert.Nil(t, records)
+	})
+}
+
+func TestClear_ZipEntries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("should remove zip_entries records and files when clearing all", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		entries := []ZipCacheEntry{
+			{Filename: "report.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<xhtml/>"), IsPrimary: true},
+			{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("PDF"), IsPrimary: false},
+		}
+		primaryPath, err := c.PutZipEntries(context.Background(), "03033634", "T01", entries, len(entries))
+		require.NoError(t, err)
+
+		// Act
+		result, err := c.Clear(context.Background(), "")
+
+		// Assert
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, result.DeletedFiles) // xhtml + pdf
+		assert.EqualValues(t, 3, result.DBRecords)    // 1 filings row + 2 zip_entries rows
+		assert.NoFileExists(t, primaryPath)
+		records, _, err := c.GetZipEntries(context.Background(), "03033634", "T01")
+		require.NoError(t, err)
+		assert.Nil(t, records)
+	})
+
+	t.Run("should remove zip_entries for the specified company only", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — two companies, each with a zip filing
+		c := newTestCache(t)
+		entriesA := []ZipCacheEntry{
+			{Filename: "a.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<a/>"), IsPrimary: true},
+		}
+		entriesB := []ZipCacheEntry{
+			{Filename: "b.xhtml", ContentType: "application/xhtml+xml", Content: []byte("<b/>"), IsPrimary: true},
+		}
+		_, err := c.PutZipEntries(context.Background(), "00000001", "T01", entriesA, len(entriesA))
+		require.NoError(t, err)
+		_, err = c.PutZipEntries(context.Background(), "00000002", "T02", entriesB, len(entriesB))
+		require.NoError(t, err)
+
+		// Act — clear only company A
+		_, err = c.Clear(context.Background(), "00000001")
+		require.NoError(t, err)
+
+		// Assert — company A gone, company B intact
+		recordsA, _, err := c.GetZipEntries(context.Background(), "00000001", "T01")
+		require.NoError(t, err)
+		assert.Nil(t, recordsA)
+
+		recordsB, _, err := c.GetZipEntries(context.Background(), "00000002", "T02")
+		require.NoError(t, err)
+		assert.Len(t, recordsB, 1)
+	})
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/riftwerx/company-research-mcp/internal/archive"
 	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
 	"github.com/riftwerx/company-research-mcp/internal/xbrl"
@@ -30,6 +31,9 @@ type CompanyHouseService interface {
 type FilingCache interface {
 	Get(ctx context.Context, chNumber, docID string) (*cache.FilingEntry, error)
 	Put(ctx context.Context, chNumber, docID, contentType, filename string, body io.Reader) (localPath string, written int64, err error)
+	PutZipEntries(ctx context.Context, chNumber, docID string, entries []cache.ZipCacheEntry, totalInArchive int) (primaryPath string, err error)
+	GetZipEntries(ctx context.Context, chNumber, docID string) ([]cache.ZipEntryRecord, int, error)
+	ParseFilingPath(realPath string) (chNumber, docID string, err error)
 	Clear(ctx context.Context, chNumber string) (cache.ClearResult, error)
 	ValidatePath(path string) (string, error)
 }
@@ -80,10 +84,13 @@ type filingResult struct {
 
 // fetchResult is the response for fetch_filing and get_latest.
 type fetchResult struct {
-	LocalPath     string `json:"local_path"`
-	ContentType   string `json:"content_type"`
-	FileSizeBytes int64  `json:"file_size_bytes"`
-	Source        string `json:"source"`
+	LocalPath      string `json:"local_path"`
+	ContentType    string `json:"content_type"`
+	FileSizeBytes  int64  `json:"file_size_bytes"`
+	Source         string `json:"source"`
+	IsArchive      bool   `json:"is_archive,omitempty"`
+	TotalInArchive int    `json:"total_in_archive,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
 }
 
 // clearCacheResult is the response for clear_cache.
@@ -267,12 +274,22 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 		return nil, fmt.Errorf("check cache: %w", err)
 	}
 	if entry != nil {
-		return toolResultJSON(fetchResult{
+		res := fetchResult{
 			LocalPath:     entry.LocalPath,
 			ContentType:   entry.ContentType,
 			FileSizeBytes: entry.FileSize,
 			Source:        "cache",
-		})
+		}
+		zipRecords, totalInArchive, zipErr := s.cache.GetZipEntries(ctx, chNumber, docID)
+		if zipErr != nil {
+			return nil, fmt.Errorf("check zip entries: %w", zipErr)
+		}
+		if len(zipRecords) > 0 {
+			res.IsArchive = true
+			res.TotalInArchive = totalInArchive
+			res.Truncated = totalInArchive > len(zipRecords)
+		}
+		return toolResultJSON(res)
 	}
 
 	doc, err := s.chSvc.GetDocument(ctx, documentURL)
@@ -290,26 +307,45 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 	// Reconstruct the body so the peeked bytes are not consumed.
 	doc.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peeked), doc.Body))
 
-	cacheFilename := ""
 	if isZip {
-		zipData, readErr := readZipBody(doc.Body, cache.MaxFileSizeBytes)
-		if errors.Is(readErr, errZipTooLarge) {
+		zipData, readErr := archive.ReadBody(doc.Body, cache.MaxFileSizeBytes)
+		if errors.Is(readErr, archive.ErrBodyTooLarge) {
 			// Too-large is a user-facing condition; other read errors are unexpected and propagate.
-			return toolError(readErr.Error())
+			return toolError(fmt.Sprintf("zip filing exceeds %d-byte size limit", cache.MaxFileSizeBytes))
 		}
 		if readErr != nil {
 			return nil, fmt.Errorf("read zip: %w", readErr)
 		}
-		extracted, extractedName, extractedType, extractErr := extractFromZip(zipData, cache.MaxFileSizeBytes)
+		zipEntries, totalInArchive, extractErr := archive.ExtractAll(zipData, cache.MaxFileSizeBytes)
 		if extractErr != nil {
 			return toolError(fmt.Sprintf("unpack zip: %s", extractErr))
 		}
-		doc.Body = io.NopCloser(bytes.NewReader(extracted))
-		doc.ContentType = extractedType
-		cacheFilename = extractedName
+		cacheEntries := make([]cache.ZipCacheEntry, len(zipEntries))
+		for i, e := range zipEntries {
+			cacheEntries[i] = cache.ZipCacheEntry{
+				Filename:    e.Filename,
+				ContentType: e.ContentType,
+				Content:     e.Content,
+				IsPrimary:   e.IsPrimary,
+			}
+		}
+		primaryPath, cacheErr := s.cache.PutZipEntries(ctx, chNumber, docID, cacheEntries, totalInArchive)
+		if cacheErr != nil {
+			return nil, fmt.Errorf("cache zip entries: %w", cacheErr)
+		}
+		primary := zipEntries[0] // ExtractAll guarantees primary is first
+		return toolResultJSON(fetchResult{
+			LocalPath:      primaryPath,
+			ContentType:    primary.ContentType,
+			FileSizeBytes:  int64(len(primary.Content)),
+			Source:         "companies_house",
+			IsArchive:      true,
+			TotalInArchive: totalInArchive,
+			Truncated:      totalInArchive > len(zipEntries),
+		})
 	}
 
-	localPath, written, err := s.cache.Put(ctx, chNumber, docID, doc.ContentType, cacheFilename, doc.Body)
+	localPath, written, err := s.cache.Put(ctx, chNumber, docID, doc.ContentType, "", doc.Body)
 	if err != nil {
 		return nil, fmt.Errorf("cache document: %w", err)
 	}
@@ -341,8 +377,74 @@ func (s *Server) handleClearCache(ctx context.Context, req mcp.CallToolRequest) 
 	})
 }
 
+// zipEntryResult is a single entry in the list_zip_contents response.
+type zipEntryResult struct {
+	Filename      string `json:"filename"`
+	LocalPath     string `json:"local_path"`
+	ContentType   string `json:"content_type"`
+	FileSizeBytes int64  `json:"file_size_bytes"`
+	IsPrimary     bool   `json:"is_primary"`
+}
+
+// listZipContentsResult is the response for list_zip_contents.
+type listZipContentsResult struct {
+	Entries        []zipEntryResult `json:"entries"`
+	TotalInArchive int              `json:"total_in_archive,omitempty"`
+	Truncated      bool             `json:"truncated,omitempty"`
+}
+
+// handleListZipContents implements the list_zip_contents tool.
+func (s *Server) handleListZipContents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	chNumber, err := req.RequireString("ch_number")
+	if err != nil {
+		return toolError("ch_number is required")
+	}
+	if !companyhouse.ValidateCHNumber(chNumber) {
+		return toolError("ch_number contains invalid characters")
+	}
+
+	documentURL, err := req.RequireString("document_url")
+	if err != nil {
+		return toolError("document_url is required")
+	}
+	if !companyhouse.ValidateDocumentURL(documentURL) {
+		return toolError("document_url must be a Companies House document API URL (document-api.company-information.service.gov.uk)")
+	}
+	docID, ok := companyhouse.ParseDocumentID(documentURL)
+	if !ok {
+		return toolError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)")
+	}
+	if !companyhouse.ValidateDocID(docID) {
+		return toolError("document_url contains an invalid document ID")
+	}
+
+	records, totalInArchive, err := s.cache.GetZipEntries(ctx, chNumber, docID)
+	if err != nil {
+		return nil, fmt.Errorf("get zip entries: %w", err)
+	}
+	if len(records) == 0 {
+		return toolError("filing is not cached or was not extracted from a zip archive; call fetch_filing first")
+	}
+
+	entries := make([]zipEntryResult, len(records))
+	for i, r := range records {
+		entries[i] = zipEntryResult{
+			Filename:      r.Filename,
+			LocalPath:     r.LocalPath,
+			ContentType:   r.ContentType,
+			FileSizeBytes: r.FileSize,
+			IsPrimary:     r.IsPrimary,
+		}
+	}
+	return toolResultJSON(listZipContentsResult{
+		Entries:        entries,
+		TotalInArchive: totalInArchive,
+		Truncated:      totalInArchive > len(records),
+	})
+}
+
 // handleExtractXBRLFacts implements the extract_xbrl_facts tool.
-func (s *Server) handleExtractXBRLFacts(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) handleExtractXBRLFacts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	localPath, err := req.RequireString("local_path")
 	if err != nil {
 		return toolError("local_path is required")
@@ -382,9 +484,36 @@ func (s *Server) handleExtractXBRLFacts(_ context.Context, req mcp.CallToolReque
 		RenderType: parsed.RenderType,
 	}
 	if parsed.RenderType == xbrl.RenderTypePDFRendered {
-		res.Warnings = []string{"narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"}
+		res.Warnings = []string{buildPDFRenderedWarning(ctx, s.cache, realPath)}
 	}
 	return toolResultJSON(res)
+}
+
+// buildPDFRenderedWarning returns a warning string for PDF-rendered iXBRL files.
+// If the file came from a zip archive it names any non-primary alternative entries;
+// if no alternatives exist it says so; if not from a zip it falls back to the generic message.
+func buildPDFRenderedWarning(ctx context.Context, c FilingCache, realPath string) string {
+	chNumber, docID, err := c.ParseFilingPath(realPath)
+	if err != nil {
+		return "narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"
+	}
+	records, _, err := c.GetZipEntries(ctx, chNumber, docID)
+	if err != nil || len(records) == 0 {
+		return "narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"
+	}
+	var alts []string
+	for _, r := range records {
+		if !r.IsPrimary {
+			alts = append(alts, fmt.Sprintf("%s (%s)", r.Filename, r.ContentType))
+		}
+	}
+	if len(alts) == 0 {
+		return "narrative text is not reliably accessible in PDF-rendered iXBRL; no alternative formats are available in the source archive"
+	}
+	return fmt.Sprintf(
+		"narrative text is not reliably accessible in PDF-rendered iXBRL; %d alternative file(s) are available in the source archive: %s — use list_zip_contents with ch_number %q and the document_url from list_filings containing document ID %q",
+		len(alts), strings.Join(alts, ", "), chNumber, docID,
+	)
 }
 
 // xbrlFactsResult is the response envelope for extract_xbrl_facts.

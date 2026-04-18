@@ -43,5 +43,28 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("create identifiers table: %w", err)
 	}
 
+	// zip_entries indexes all documents extracted from a zip archive filing.
+	// Each (ch_number, doc_id, filename) triple is unique. The primary document
+	// (is_primary=1) is also indexed in filings for backward compatibility with Get.
+	// total_in_archive is the count of non-directory entries in the source archive
+	// before the MaxEntries cap. It is identical for every row of a given
+	// (ch_number, doc_id) pair — stored redundantly on each row so that any single-row
+	// query (e.g. SELECT … LIMIT 1) can read it without a JOIN or sub-query.
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS zip_entries (
+			ch_number        TEXT    NOT NULL,
+			doc_id           TEXT    NOT NULL,
+			filename         TEXT    NOT NULL,
+			local_path       TEXT    NOT NULL,
+			content_type     TEXT    NOT NULL,
+			file_size        INTEGER NOT NULL,
+			is_primary       INTEGER NOT NULL DEFAULT 0,
+			total_in_archive INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (ch_number, doc_id, filename)
+		)`,
+	); err != nil {
+		return fmt.Errorf("create zip_entries table: %w", err)
+	}
+
 	return tx.Commit()
 }

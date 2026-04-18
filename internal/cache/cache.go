@@ -3,6 +3,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -43,6 +44,23 @@ type ClearResult struct {
 	DeletedFiles int64
 	FreedBytes   int64
 	DBRecords    int64
+}
+
+// ZipCacheEntry is a single document to be written as part of a zip-derived filing.
+type ZipCacheEntry struct {
+	Filename    string
+	ContentType string
+	Content     []byte
+	IsPrimary   bool
+}
+
+// ZipEntryRecord is a single row returned by GetZipEntries.
+type ZipEntryRecord struct {
+	Filename    string
+	LocalPath   string
+	ContentType string
+	FileSize    int64
+	IsPrimary   bool
 }
 
 // NewDefaultConfig returns the default Cache configuration.
@@ -134,6 +152,22 @@ func (c *Cache) ValidatePath(path string) (string, error) {
 		return "", ErrOutsideCache
 	}
 	return real, nil
+}
+
+// ParseFilingPath extracts the ch_number and doc_id from an absolute real path
+// that has already been validated by ValidatePath (i.e. confirmed within the
+// cache file subtree). Returns an error if the path structure is unexpected.
+func (c *Cache) ParseFilingPath(realPath string) (chNumber, docID string, err error) {
+	cacheRoot := filepath.Join(c.baseDir, cacheSubDir)
+	rel, relErr := filepath.Rel(cacheRoot, realPath)
+	if relErr != nil {
+		return "", "", relErr
+	}
+	parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("unexpected cache path structure: %s", rel)
+	}
+	return parts[0], parts[1], nil
 }
 
 // Put stores body as a local file and records the filing in the index.
@@ -230,26 +264,207 @@ func (c *Cache) Get(ctx context.Context, chNumber, docID string) (*FilingEntry, 
 	return &entry, nil
 }
 
+// PutZipEntries stores all documents extracted from a zip archive and indexes them.
+// Each entry is written atomically using the same temp-file rename pattern as Put.
+// All entries are indexed in zip_entries; the primary entry is also indexed in filings
+// so that existing Get calls continue to return the primary document.
+// totalInArchive is the count of non-directory entries in the source archive before any
+// MaxEntries cap; it is stored so callers can detect whether the result was truncated.
+// Returns the local file path of the primary document.
+//
+// All DB writes happen inside a single transaction. On any failure the transaction is
+// rolled back and every file written during this call is removed, keeping the DB and
+// disk in a consistent state.
+func (c *Cache) PutZipEntries(ctx context.Context, chNumber, docID string, entries []ZipCacheEntry, totalInArchive int) (string, error) {
+	hasPrimary := false
+	for _, e := range entries {
+		if e.IsPrimary {
+			hasPrimary = true
+			break
+		}
+	}
+	if !hasPrimary {
+		return "", fmt.Errorf("no primary entry in zip entries")
+	}
+
+	relDir := filepath.Join(cacheSubDir, chNumber, docID)
+	if err := c.root.MkdirAll(relDir, 0o755); err != nil {
+		return "", fmt.Errorf("create cache dir: %w", err)
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin transaction: %w", err)
+	}
+
+	// writtenRels tracks relative paths of files committed to disk in this call.
+	// The defer rolls back the transaction and removes those files on any failure,
+	// keeping the DB and disk in sync.
+	var writtenRels []string
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+			for _, rel := range writtenRels {
+				_ = c.root.Remove(rel)
+			}
+		}
+	}()
+
+	var primaryPath string
+
+	for _, entry := range entries {
+		name := entry.Filename
+		if name == "" {
+			name = "filing" + mime.Ext(entry.ContentType)
+		}
+		relFinal := filepath.Join(relDir, name)
+		finalPath := filepath.Join(c.baseDir, relFinal)
+
+		relTmp := filepath.Join(relDir, fmt.Sprintf("filing-%016x.tmp", rand.Uint64())) //nolint:gosec // G404: temp file suffix does not require cryptographic randomness
+		tmp, err := c.root.OpenFile(relTmp, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return "", fmt.Errorf("create temp file: %w", err)
+		}
+
+		// Defence-in-depth: content was already bounded in archive.ExtractAll, but mirror the Put pattern.
+		lr := &io.LimitedReader{R: bytes.NewReader(entry.Content), N: int64(MaxFileSizeBytes) + 1}
+		written, copyErr := io.Copy(tmp, lr)
+		closeErr := tmp.Close()
+		switch {
+		case copyErr != nil:
+			_ = c.root.Remove(relTmp)
+			return "", fmt.Errorf("write file: %w", copyErr)
+		case closeErr != nil:
+			_ = c.root.Remove(relTmp)
+			return "", fmt.Errorf("close temp file: %w", closeErr)
+		case lr.N == 0:
+			_ = c.root.Remove(relTmp)
+			return "", fmt.Errorf("filing exceeds %d-byte size limit", MaxFileSizeBytes)
+		}
+
+		if err := c.root.Rename(relTmp, relFinal); err != nil {
+			_ = c.root.Remove(relTmp)
+			return "", fmt.Errorf("commit file: %w", err)
+		}
+		writtenRels = append(writtenRels, relFinal)
+
+		isPrimary := 0
+		if entry.IsPrimary {
+			isPrimary = 1
+		}
+
+		_, err = tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO zip_entries (ch_number, doc_id, filename, local_path, content_type, file_size, is_primary, total_in_archive)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			chNumber, docID, name, finalPath, entry.ContentType, written, isPrimary, totalInArchive,
+		)
+		if err != nil {
+			return "", fmt.Errorf("index zip entry: %w", err)
+		}
+
+		if entry.IsPrimary {
+			_, err = tx.ExecContext(ctx,
+				`INSERT OR REPLACE INTO filings (ch_number, doc_id, local_path, content_type, file_size)
+				 VALUES (?, ?, ?, ?, ?)`,
+				chNumber, docID, finalPath, entry.ContentType, written,
+			)
+			if err != nil {
+				return "", fmt.Errorf("index primary filing: %w", err)
+			}
+			primaryPath = finalPath
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
+	return primaryPath, nil
+}
+
+// GetZipEntries returns all documents indexed for the given filing and the total
+// number of non-directory files in the source archive before any MaxEntries cap.
+// Returns nil, 0, nil if no zip_entries rows exist for (chNumber, docID).
+// len(records) < totalInArchive means the archive was truncated at extraction time.
+func (c *Cache) GetZipEntries(ctx context.Context, chNumber, docID string) ([]ZipEntryRecord, int, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT filename, local_path, content_type, file_size, is_primary, total_in_archive
+		 FROM zip_entries WHERE ch_number = ? AND doc_id = ?
+		 ORDER BY is_primary DESC, filename`,
+		chNumber, docID,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query zip entries: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // rows.Err() checked below
+
+	var records []ZipEntryRecord
+	var totalInArchive int
+	for rows.Next() {
+		var r ZipEntryRecord
+		var isPrimary int
+		if err := rows.Scan(&r.Filename, &r.LocalPath, &r.ContentType, &r.FileSize, &isPrimary, &totalInArchive); err != nil {
+			return nil, 0, fmt.Errorf("scan zip entry: %w", err)
+		}
+		r.IsPrimary = isPrimary != 0
+		records = append(records, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate zip entries: %w", err)
+	}
+	return records, totalInArchive, nil
+}
+
 // Clear removes cached filings from disk and deletes their index records.
 // If chNumber is non-empty only that company's filings are removed; otherwise all filings are removed.
 //
-// The index is updated before files are removed so that a failed file removal
-// leaves the cache in a consistent state (index and disk match).
+// Both tables (filings and zip_entries) are deleted inside a single transaction so
+// the DB is never left in a half-cleared state. The index is updated before files
+// are removed so that a failed file removal leaves the cache in a consistent state
+// (index and disk match).
 func (c *Cache) Clear(ctx context.Context, chNumber string) (ClearResult, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ClearResult{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // superseded by Commit; rollback error is irrelevant on success
+
+	var dbRecords int64
+
 	var sqlResult sql.Result
-	var err error
 	if chNumber != "" {
-		sqlResult, err = c.db.ExecContext(ctx, `DELETE FROM filings WHERE ch_number = ?`, chNumber)
+		sqlResult, err = tx.ExecContext(ctx, `DELETE FROM filings WHERE ch_number = ?`, chNumber)
 	} else {
-		sqlResult, err = c.db.ExecContext(ctx, `DELETE FROM filings`)
+		sqlResult, err = tx.ExecContext(ctx, `DELETE FROM filings`)
 	}
 	if err != nil {
 		return ClearResult{}, fmt.Errorf("delete index records: %w", err)
 	}
-
-	dbRecords, err := sqlResult.RowsAffected()
+	n, err := sqlResult.RowsAffected()
 	if err != nil {
 		return ClearResult{}, fmt.Errorf("rows affected: %w", err)
+	}
+	dbRecords += n
+
+	// Also clear zip_entries; the file-level RemoveAll below handles the actual files.
+	var zipResult sql.Result
+	if chNumber != "" {
+		zipResult, err = tx.ExecContext(ctx, `DELETE FROM zip_entries WHERE ch_number = ?`, chNumber)
+	} else {
+		zipResult, err = tx.ExecContext(ctx, `DELETE FROM zip_entries`)
+	}
+	if err != nil {
+		return ClearResult{}, fmt.Errorf("delete zip entry records: %w", err)
+	}
+	n, err = zipResult.RowsAffected()
+	if err != nil {
+		return ClearResult{}, fmt.Errorf("zip rows affected: %w", err)
+	}
+	dbRecords += n
+
+	if err := tx.Commit(); err != nil {
+		return ClearResult{}, fmt.Errorf("commit: %w", err)
 	}
 
 	targetDir := cacheSubDir
