@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/riftwerx/company-research-mcp/internal/archive"
 	"github.com/riftwerx/company-research-mcp/internal/cache"
 	"github.com/riftwerx/company-research-mcp/internal/companyhouse"
 )
@@ -74,9 +77,41 @@ func (m *mockFilingCache) Clear(ctx context.Context, chNumber string) (cache.Cle
 	return result, args.Error(1)
 }
 
+func (m *mockFilingCache) PutZipEntries(ctx context.Context, chNumber, docID string, entries []cache.ZipCacheEntry, totalInArchive int) (string, error) {
+	args := m.Called(ctx, chNumber, docID, entries, totalInArchive)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockFilingCache) GetZipEntries(ctx context.Context, chNumber, docID string) ([]cache.ZipEntryRecord, int, error) {
+	args := m.Called(ctx, chNumber, docID)
+	records, _ := args.Get(0).([]cache.ZipEntryRecord)
+	total, _ := args.Get(1).(int)
+	return records, total, args.Error(2)
+}
+
+func (m *mockFilingCache) ParseFilingPath(realPath string) (string, string, error) {
+	args := m.Called(realPath)
+	return args.String(0), args.String(1), args.Error(2)
+}
+
 func (m *mockFilingCache) ValidatePath(path string) (string, error) {
 	args := m.Called(path)
 	return args.String(0), args.Error(1)
+}
+
+// buildZip creates an in-memory zip archive from a slice of [name, content] pairs.
+func buildZip(t *testing.T, files [][2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for _, f := range files {
+		fw, err := w.Create(f[0])
+		require.NoError(t, err, "buildZip: create %q", f[0])
+		_, err = fw.Write([]byte(f[1]))
+		require.NoError(t, err, "buildZip: write %q", f[0])
+	}
+	require.NoError(t, w.Close(), "buildZip: close")
+	return buf.Bytes()
 }
 
 // callTool is a test helper that calls the given handler with the provided arguments.
@@ -408,6 +443,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		svc := &mockCHService{}
 		fc := &mockFilingCache{}
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return(&cache.FilingEntry{LocalPath: "/cache/filing.pdf", ContentType: "application/pdf", FileSize: int64(100)}, nil)
+		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, nil)
 		defer fc.AssertExpectations(t)
 		srv := New(svc, fc)
 
@@ -424,6 +460,38 @@ func TestHandleFetchFiling(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "cache", out.Source)
 		assert.Equal(t, "/cache/filing.pdf", out.LocalPath)
+		assert.False(t, out.IsArchive)
+	})
+
+	t.Run("should include is_archive and zip metadata on cache hit for a zip filing", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		svc := &mockCHService{}
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return(&cache.FilingEntry{LocalPath: "/cache/report.xhtml", ContentType: "application/xhtml+xml", FileSize: int64(1000)}, nil)
+		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return([]cache.ZipEntryRecord{
+			{Filename: "report.xhtml", LocalPath: "/cache/report.xhtml", ContentType: "application/xhtml+xml", IsPrimary: true},
+			{Filename: "report.pdf", LocalPath: "/cache/report.pdf", ContentType: "application/pdf", IsPrimary: false},
+		}, 2, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out fetchResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.Equal(t, "cache", out.Source)
+		assert.True(t, out.IsArchive)
+		assert.Equal(t, 2, out.TotalInArchive)
+		assert.False(t, out.Truncated)
 	})
 
 	t.Run("should download and cache a document on cache miss", func(t *testing.T) {
@@ -527,7 +595,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		assert.True(t, isToolError(result))
 	})
 
-	t.Run("should extract primary xhtml from a zip response", func(t *testing.T) {
+	t.Run("should extract primary xhtml from a zip response and set is_archive", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
@@ -546,8 +614,15 @@ func TestHandleFetchFiling(t *testing.T) {
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
-		fc.On("Put", mock.Anything, "00445790", "abc123", "application/xhtml+xml", "report-2024-T01.xhtml", mock.Anything).
-			Return("/cache/report-2024-T01.xhtml", int64(len(xhtmlContent)), nil)
+		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
+			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
+				return len(entries) == 1 &&
+					entries[0].Filename == "report-2024-T01.xhtml" &&
+					entries[0].ContentType == "application/xhtml+xml" &&
+					entries[0].IsPrimary
+			}),
+			1,
+		).Return("/cache/report-2024-T01.xhtml", nil)
 		defer fc.AssertExpectations(t)
 		srv := New(svc, fc)
 
@@ -564,6 +639,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "application/xhtml+xml", out.ContentType)
 		assert.Equal(t, "companies_house", out.Source)
+		assert.True(t, out.IsArchive)
 	})
 
 	t.Run("should detect zip by magic bytes when Content-Type is wrong", func(t *testing.T) {
@@ -584,8 +660,15 @@ func TestHandleFetchFiling(t *testing.T) {
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
-		fc.On("Put", mock.Anything, "00445790", "abc123", "application/xhtml+xml", "report.xhtml", mock.Anything).
-			Return("/cache/report.xhtml", int64(7), nil)
+		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
+			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
+				return len(entries) == 1 &&
+					entries[0].Filename == "report.xhtml" &&
+					entries[0].ContentType == "application/xhtml+xml" &&
+					entries[0].IsPrimary
+			}),
+			1,
+		).Return("/cache/report.xhtml", nil)
 		defer fc.AssertExpectations(t)
 		srv := New(svc, fc)
 
@@ -601,6 +684,87 @@ func TestHandleFetchFiling(t *testing.T) {
 		var out fetchResult
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "application/xhtml+xml", out.ContentType)
+		assert.True(t, out.IsArchive)
+	})
+
+	t.Run("should not set is_archive for non-zip responses", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		svc := &mockCHService{}
+		svc.On("GetDocument", mock.Anything, docURL).Return(
+			&companyhouse.Document{
+				Body:        io.NopCloser(strings.NewReader("PDF content")),
+				ContentType: "application/pdf",
+			},
+			nil,
+		)
+		defer svc.AssertExpectations(t)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out fetchResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.False(t, out.IsArchive)
+	})
+
+	t.Run("should set truncated true when archive exceeds MaxEntries cap", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — build a zip with 21 files: one .xhtml (primary) + 20 .pdfs.
+		// archive.ExtractAll caps at MaxEntries=20, so totalFiles=21 but len(entries)=20,
+		// which should produce Truncated=true in the fetchResult.
+		files := [][2]string{{"report.xhtml", "<xhtml/>"}}
+		for i := range 20 {
+			files = append(files, [2]string{fmt.Sprintf("page%02d.pdf", i), "PDF"})
+		}
+		zipBody := buildZip(t, files)
+		svc := &mockCHService{}
+		svc.On("GetDocument", mock.Anything, docURL).Return(
+			&companyhouse.Document{
+				Body:        io.NopCloser(bytes.NewReader(zipBody)),
+				ContentType: "application/zip",
+			},
+			nil,
+		)
+		defer svc.AssertExpectations(t)
+		fc := &mockFilingCache{}
+		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
+		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
+			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
+				return len(entries) == archive.MaxEntries
+			}),
+			21,
+		).Return("/cache/report.xhtml", nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out fetchResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.True(t, out.IsArchive)
+		assert.True(t, out.Truncated)
+		assert.Equal(t, 21, out.TotalInArchive)
 	})
 
 	t.Run("should return tool error when zip is malformed", func(t *testing.T) {
@@ -1160,7 +1324,7 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 		assert.Empty(t, out.Warnings)
 	})
 
-	t.Run("should include render_type pdf_rendered and warnings when pdf2htmlEX markers are present", func(t *testing.T) {
+	t.Run("should include render_type pdf_rendered and generic warning when not from a zip", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange — document contains the canonical pdf2htmlEX page wrapper <div class="pf">.
@@ -1177,6 +1341,8 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 		filingCache := &mockFilingCache{}
 		defer filingCache.AssertExpectations(t)
 		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		filingCache.On("ParseFilingPath", filePath).Return("12345678", "doc-001", nil)
+		filingCache.On("GetZipEntries", mock.Anything, "12345678", "doc-001").Return(([]cache.ZipEntryRecord)(nil), 0, nil)
 		srv := New(&mockCHService{}, filingCache)
 
 		// Act
@@ -1194,5 +1360,206 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 		assert.Equal(t, "pdf_rendered", out.RenderType)
 		require.Len(t, out.Warnings, 1)
 		assert.Contains(t, out.Warnings[0], "narrative text")
+		assert.Contains(t, out.Warnings[0], "consider fetching an alternative filing format")
+	})
+
+	t.Run("should name available alternatives in warning when pdf_rendered and zip has non-primary entries", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — pdf2htmlEX document from a zip that also contains a PDF alternative.
+		pdfXHTML := `<!DOCTYPE html><html><body>
+<xbrli:context id="c1">
+  <xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity>
+  <xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period>
+</xbrli:context>
+<xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit>
+<div class="pf"><div class="pc"><span class="t">A</span></div></div>
+<ix:nonFraction name="frs102:Revenue" contextRef="c1" unitRef="GBP" decimals="0">100</ix:nonFraction>
+</body></html>`
+		_, filePath := writeXHTMLInCache(t, pdfXHTML)
+		records := []cache.ZipEntryRecord{
+			{Filename: "report.xhtml", LocalPath: filePath, ContentType: "application/xhtml+xml", FileSize: 1000, IsPrimary: true},
+			{Filename: "report.pdf", LocalPath: "/cache/report.pdf", ContentType: "application/pdf", FileSize: 500000, IsPrimary: false},
+		}
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		filingCache.On("ParseFilingPath", filePath).Return("12345678", "doc-001", nil)
+		filingCache.On("GetZipEntries", mock.Anything, "12345678", "doc-001").Return(records, len(records), nil)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": filePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError)
+		var out struct {
+			RenderType string   `json:"render_type"`
+			Warnings   []string `json:"warnings"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &out))
+		assert.Equal(t, "pdf_rendered", out.RenderType)
+		require.Len(t, out.Warnings, 1)
+		assert.Contains(t, out.Warnings[0], "narrative text")
+		assert.Contains(t, out.Warnings[0], "report.pdf")
+		assert.Contains(t, out.Warnings[0], "list_zip_contents")
+		assert.Contains(t, out.Warnings[0], "12345678")
+		assert.Contains(t, out.Warnings[0], "document_url")
+	})
+
+	t.Run("should say no alternatives available when pdf_rendered and all zip entries are primary", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — zip with only the primary iXBRL document (no PDF companion).
+		pdfXHTML := `<!DOCTYPE html><html><body>
+<xbrli:context id="c1">
+  <xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity>
+  <xbrli:period><xbrli:instant>2024-12-31</xbrli:instant></xbrli:period>
+</xbrli:context>
+<xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit>
+<div class="pf"><div class="pc"><span class="t">A</span></div></div>
+<ix:nonFraction name="frs102:Revenue" contextRef="c1" unitRef="GBP" decimals="0">100</ix:nonFraction>
+</body></html>`
+		_, filePath := writeXHTMLInCache(t, pdfXHTML)
+		records := []cache.ZipEntryRecord{
+			{Filename: "report.xhtml", LocalPath: filePath, ContentType: "application/xhtml+xml", FileSize: 1000, IsPrimary: true},
+		}
+		filingCache := &mockFilingCache{}
+		defer filingCache.AssertExpectations(t)
+		filingCache.On("ValidatePath", filePath).Return(filePath, nil)
+		filingCache.On("ParseFilingPath", filePath).Return("12345678", "doc-001", nil)
+		filingCache.On("GetZipEntries", mock.Anything, "12345678", "doc-001").Return(records, len(records), nil)
+		srv := New(&mockCHService{}, filingCache)
+
+		// Act
+		result, err := callTool(srv.handleExtractXBRLFacts, map[string]any{"local_path": filePath})
+
+		// Assert
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError)
+		var out struct {
+			RenderType string   `json:"render_type"`
+			Warnings   []string `json:"warnings"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &out))
+		assert.Equal(t, "pdf_rendered", out.RenderType)
+		require.Len(t, out.Warnings, 1)
+		assert.Contains(t, out.Warnings[0], "no alternative formats are available")
+	})
+}
+
+func TestHandleListZipContents(t *testing.T) {
+	t.Parallel()
+
+	const docURL = "https://document-api.company-information.service.gov.uk/document/abc123"
+
+	t.Run("should return manifest for a cached zip filing", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		records := []cache.ZipEntryRecord{
+			{Filename: "report.xhtml", LocalPath: "/cache/report.xhtml", ContentType: "application/xhtml+xml", FileSize: 12345, IsPrimary: true},
+			{Filename: "report.pdf", LocalPath: "/cache/report.pdf", ContentType: "application/pdf", FileSize: 4823091, IsPrimary: false},
+		}
+		fc := &mockFilingCache{}
+		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(records, len(records), nil)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
+
+		// Act
+		result, err := callTool(srv.handleListZipContents, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.False(t, isToolError(result))
+		var out listZipContentsResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.Len(t, out.Entries, 2)
+		assert.True(t, out.Entries[0].IsPrimary)
+		assert.Equal(t, "report.xhtml", out.Entries[0].Filename)
+		assert.Equal(t, "/cache/report.xhtml", out.Entries[0].LocalPath)
+		assert.Equal(t, "application/xhtml+xml", out.Entries[0].ContentType)
+		assert.EqualValues(t, 12345, out.Entries[0].FileSizeBytes)
+		assert.False(t, out.Entries[1].IsPrimary)
+		assert.Equal(t, "report.pdf", out.Entries[1].Filename)
+		assert.Equal(t, 2, out.TotalInArchive)
+		assert.False(t, out.Truncated)
+	})
+
+	t.Run("should return a tool error when filing is not cached or not a zip", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		fc := &mockFilingCache{}
+		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
+
+		// Act
+		result, err := callTool(srv.handleListZipContents, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+		assert.Contains(t, resultText(result), "not cached")
+	})
+
+	t.Run("should return a tool error for missing ch_number", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		srv := New(&mockCHService{}, &mockFilingCache{})
+
+		// Act
+		result, err := callTool(srv.handleListZipContents, map[string]any{"document_url": docURL})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+	})
+
+	t.Run("should return a tool error for an invalid document_url", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		srv := New(&mockCHService{}, &mockFilingCache{})
+
+		// Act
+		result, err := callTool(srv.handleListZipContents, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": "https://evil.com/document/abc123",
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+	})
+
+	t.Run("should propagate cache errors", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		fc := &mockFilingCache{}
+		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, errors.New("db error"))
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
+
+		// Act
+		_, err := callTool(srv.handleListZipContents, map[string]any{
+			"ch_number":    "00445790",
+			"document_url": docURL,
+		})
+
+		// Assert
+		assert.Error(t, err)
 	})
 }

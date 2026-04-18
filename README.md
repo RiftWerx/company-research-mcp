@@ -138,14 +138,21 @@ Add to `~/.continue/config.json` under `mcpServers`:
 | `list_filings` | List filing history for a company (filings without a downloadable document are excluded) |
 | `fetch_filing` | Download a specific filing document (`document_url` must be a `document-api.company-information.service.gov.uk` URL) |
 | `get_latest` | Fetch the most recent filing of a given category |
+| `list_zip_contents` | List all documents extracted from a zip archive filing; use when `fetch_filing` or `get_latest` returns `is_archive: true` |
 | `extract_xbrl_facts` | Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON; also reports whether the document is native iXBRL or PDF-rendered |
 | `clear_cache` | Delete cached filing documents |
 
 ### Document formats
 
 Filings are returned as **PDF** or **iXBRL** (`.xhtml`) depending on what Companies House provides.
-When a filing is served as a zip archive the primary document is extracted automatically — the
-`local_path` in the response points to the extracted file, not the original zip.
+
+When a filing is served as a zip archive, all documents are extracted and the primary document is
+selected automatically. The `fetch_filing` / `get_latest` response will include `is_archive: true`
+alongside `local_path` for the primary file. Call `list_zip_contents` with the same `ch_number`
+and `document_url` to get the full manifest — each entry has its own `local_path`, `content_type`,
+and `is_primary` flag, so secondary documents (e.g. a PDF companion alongside an iXBRL) can be
+accessed directly. When an archive contains more than 20 files, `truncated: true` is set and
+`total_in_archive` shows the full count.
 
 ### Extracting financial data from iXBRL filings
 
@@ -164,7 +171,9 @@ facts).
 `render_type` is `"native_ixbrl"` for standard filings or `"pdf_rendered"` for filings produced
 by a PDF-to-HTML converter (e.g. `pdf2htmlEX`). PDF-rendered filings have fully extractable XBRL
 facts but fragmented narrative text (MD&A, notes); when detected a `warnings` array explains this
-and the document will not be readable as prose.
+and the document will not be readable as prose. If the filing came from a zip archive, the warning
+also names any alternative formats available (e.g. a PDF) and directs you to use `list_zip_contents`
+to access them.
 
 ### Local cache
 
