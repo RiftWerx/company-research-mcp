@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
+
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 
 	"github.com/riftwerx/company-research-mcp/internal/mime"
@@ -136,6 +138,10 @@ func New(cfg Config) (*Cache, error) {
 // ErrOutsideCache is returned by ValidatePath when the resolved path is not
 // within the cache file subtree.
 var ErrOutsideCache = errors.New("path is outside the cache directory")
+
+// ErrFilingRefNotFound is returned by ResolveFilingRef when the given document_id
+// is not present in the filing_refs table.
+var ErrFilingRefNotFound = errors.New("document_id not found")
 
 // ValidatePath resolves symlinks in path and verifies it is within the cache
 // file subtree (baseDir/cache/uk/...). It returns the resolved real path on
@@ -494,6 +500,48 @@ func (c *Cache) Clear(ctx context.Context, chNumber string) (ClearResult, error)
 	}
 
 	return result, nil
+}
+
+// StoreFilingRef returns the document_id for (chNumber, transactionID), generating
+// and persisting a new UUID v4 if not already stored. Idempotent: concurrent or
+// repeated calls for the same (chNumber, transactionID) always return the same document_id.
+func (c *Cache) StoreFilingRef(ctx context.Context, chNumber, transactionID, documentURL string) (string, error) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("generate document id: %w", err)
+	}
+	// INSERT OR IGNORE: no-op if (ch_number, transaction_id) already exists.
+	if _, err := c.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO filing_refs (document_id, ch_number, transaction_id, document_url) VALUES (?, ?, ?, ?)`,
+		id.String(), chNumber, transactionID, documentURL,
+	); err != nil {
+		return "", fmt.Errorf("insert filing ref: %w", err)
+	}
+	// Always read back the winner — handles both the fresh-insert and the pre-existing cases.
+	var docID string
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT document_id FROM filing_refs WHERE ch_number = ? AND transaction_id = ?`,
+		chNumber, transactionID,
+	).Scan(&docID); err != nil {
+		return "", fmt.Errorf("query filing ref: %w", err)
+	}
+	return docID, nil
+}
+
+// ResolveFilingRef returns the document_url for the given (chNumber, documentID) pair.
+// Returns ErrFilingRefNotFound if the document_id is not present in the filing_refs table.
+func (c *Cache) ResolveFilingRef(ctx context.Context, chNumber, documentID string) (string, error) {
+	var url string
+	row := c.db.QueryRowContext(ctx,
+		`SELECT document_url FROM filing_refs WHERE ch_number = ? AND document_id = ?`,
+		chNumber, documentID,
+	)
+	if err := row.Scan(&url); errors.Is(err, sql.ErrNoRows) {
+		return "", ErrFilingRefNotFound
+	} else if err != nil {
+		return "", fmt.Errorf("query filing ref: %w", err)
+	}
+	return url, nil
 }
 
 // Close closes the underlying root and database connection.

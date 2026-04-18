@@ -43,6 +43,22 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("create identifiers table: %w", err)
 	}
 
+	// filing_refs maps opaque document_id UUIDs (issued to agents) to the CH document URLs
+	// they represent. Clear() does not delete these rows — refs survive a cache clear so
+	// fetch_filing continues to work without re-calling list_filings.
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS filing_refs (
+			document_id    TEXT NOT NULL,
+			ch_number      TEXT NOT NULL,
+			transaction_id TEXT NOT NULL,
+			document_url   TEXT NOT NULL,
+			PRIMARY KEY (document_id),
+			UNIQUE (ch_number, transaction_id)
+		)`,
+	); err != nil {
+		return fmt.Errorf("create filing_refs table: %w", err)
+	}
+
 	// zip_entries indexes all documents extracted from a zip archive filing.
 	// Each (ch_number, doc_id, filename) triple is unique. The primary document
 	// (is_primary=1) is also indexed in filings for backward compatibility with Get.

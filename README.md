@@ -135,9 +135,9 @@ Add to `~/.continue/config.json` under `mcpServers`:
 |---|---|
 | `search_company` | Search for UK companies by name |
 | `get_company_profile` | Get a company profile by Companies House number |
-| `list_filings` | List filing history for a company (filings without a downloadable document are excluded) |
-| `fetch_filing` | Download a specific filing document (`document_url` must be a `document-api.company-information.service.gov.uk` URL) |
-| `get_latest` | Fetch the most recent filing of a given category |
+| `list_filings` | List filing history for a company; returns a `document_id` for each filing (filings without a downloadable document are excluded) |
+| `fetch_filing` | Download a specific filing document using the `document_id` from `list_filings` |
+| `get_latest` | Fetch the most recent filing of a given category; returns a `document_id` alongside the local path |
 | `list_zip_contents` | List all documents extracted from a zip archive filing; use when `fetch_filing` or `get_latest` returns `is_archive: true` |
 | `extract_xbrl_facts` | Parse a cached iXBRL `.xhtml` file and return structured financial facts as JSON; also reports whether the document is native iXBRL or PDF-rendered |
 | `clear_cache` | Delete cached filing documents |
@@ -148,11 +148,11 @@ Filings are returned as **PDF** or **iXBRL** (`.xhtml`) depending on what Compan
 
 When a filing is served as a zip archive, all documents are extracted and the primary document is
 selected automatically. The `fetch_filing` / `get_latest` response will include `is_archive: true`
-alongside `local_path` for the primary file. Call `list_zip_contents` with the same `ch_number`
-and `document_url` to get the full manifest — each entry has its own `local_path`, `content_type`,
-and `is_primary` flag, so secondary documents (e.g. a PDF companion alongside an iXBRL) can be
-accessed directly. When an archive contains more than 20 files, `truncated: true` is set and
-`total_in_archive` shows the full count.
+alongside `local_path` and `document_id` for the primary file. Call `list_zip_contents` with the
+same `ch_number` and `document_id` to get the full manifest — each entry has its own `local_path`,
+`content_type`, and `is_primary` flag, so secondary documents (e.g. a PDF companion alongside an
+iXBRL) can be accessed directly. When an archive contains more than 20 files, `truncated: true` is
+set and `total_in_archive` shows the full count.
 
 ### Extracting financial data from iXBRL filings
 

@@ -94,6 +94,16 @@ func (m *mockFilingCache) ParseFilingPath(realPath string) (string, string, erro
 	return args.String(0), args.String(1), args.Error(2)
 }
 
+func (m *mockFilingCache) StoreFilingRef(ctx context.Context, chNumber, transactionID, documentURL string) (string, error) {
+	args := m.Called(ctx, chNumber, transactionID, documentURL)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockFilingCache) ResolveFilingRef(ctx context.Context, chNumber, documentID string) (string, error) {
+	args := m.Called(ctx, chNumber, documentID)
+	return args.String(0), args.Error(1)
+}
+
 func (m *mockFilingCache) ValidatePath(path string) (string, error) {
 	args := m.Called(path)
 	return args.String(0), args.Error(1)
@@ -353,6 +363,12 @@ func TestHandleGetCompanyProfile(t *testing.T) {
 func TestHandleListFilings(t *testing.T) {
 	t.Parallel()
 
+	const (
+		testTransactionID = "MzI1MDk3NjkxOGFkaXF6a2N4"
+		testDocURL        = "https://document-api.company-information.service.gov.uk/document/abc123"
+		testDocumentID    = "11111111-2222-4333-8444-555555555555"
+	)
+
 	t.Run("should return filings for a valid company number", func(t *testing.T) {
 		t.Parallel()
 
@@ -363,17 +379,20 @@ func TestHandleListFilings(t *testing.T) {
 		}).Return(
 			[]companyhouse.Filing{
 				{
-					TransactionID: "MzI1MDk3NjkxOGFkaXF6a2N4",
+					TransactionID: testTransactionID,
 					Type:          "AA",
 					Description:   "full accounts made up to 25 February 2024",
 					Date:          time.Date(2024, 6, 21, 0, 0, 0, 0, time.UTC),
-					DocumentURL:   "https://document-api.company-information.service.gov.uk/document/abc123",
+					DocumentURL:   testDocURL,
 				},
 			},
 			nil,
 		)
 		defer svc.AssertExpectations(t)
-		srv := newTestServer(svc)
+		fc := &mockFilingCache{}
+		fc.On("StoreFilingRef", mock.Anything, "00445790", testTransactionID, testDocURL).Return(testDocumentID, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleListFilings, map[string]any{"ch_number": "00445790"})
@@ -381,6 +400,12 @@ func TestHandleListFilings(t *testing.T) {
 		// Assert
 		require.NoError(t, err)
 		assert.False(t, isToolError(result))
+		var out []filingResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		require.Len(t, out, 1)
+		assert.Equal(t, testDocumentID, out[0].DocumentID)
+		assert.Equal(t, "AA", out[0].Type)
+		assert.Equal(t, "2024-06-21", out[0].Date)
 	})
 
 	t.Run("should return a tool error when ch_number is missing", func(t *testing.T) {
@@ -433,8 +458,10 @@ func TestHandleListFilings(t *testing.T) {
 func TestHandleFetchFiling(t *testing.T) {
 	t.Parallel()
 
-	// docURL uses the metadata URL form — as returned by list_filings / GetFilingHistory.
+	// docURL is the internal CH document URL stored in filing_refs.
 	const docURL = "https://document-api.company-information.service.gov.uk/document/abc123"
+	// testDocumentID is the opaque UUID that agents pass to fetch_filing.
+	const testDocumentID = "11111111-2222-4333-8444-555555555555"
 
 	t.Run("should return a cached document when already stored", func(t *testing.T) {
 		t.Parallel()
@@ -442,6 +469,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		// Arrange
 		svc := &mockCHService{}
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return(&cache.FilingEntry{LocalPath: "/cache/filing.pdf", ContentType: "application/pdf", FileSize: int64(100)}, nil)
 		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, nil)
 		defer fc.AssertExpectations(t)
@@ -449,8 +477,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -460,6 +488,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "cache", out.Source)
 		assert.Equal(t, "/cache/filing.pdf", out.LocalPath)
+		assert.Equal(t, testDocumentID, out.DocumentID)
 		assert.False(t, out.IsArchive)
 	})
 
@@ -469,6 +498,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		// Arrange
 		svc := &mockCHService{}
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return(&cache.FilingEntry{LocalPath: "/cache/report.xhtml", ContentType: "application/xhtml+xml", FileSize: int64(1000)}, nil)
 		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return([]cache.ZipEntryRecord{
 			{Filename: "report.xhtml", LocalPath: "/cache/report.xhtml", ContentType: "application/xhtml+xml", IsPrimary: true},
@@ -479,8 +509,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -508,6 +538,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
 		defer fc.AssertExpectations(t)
@@ -515,8 +546,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -525,6 +556,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		var out fetchResult
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
 		assert.Equal(t, "companies_house", out.Source)
+		assert.Equal(t, testDocumentID, out.DocumentID)
 	})
 
 	t.Run("should return a tool error when document is not found", func(t *testing.T) {
@@ -535,19 +567,41 @@ func TestHandleFetchFiling(t *testing.T) {
 		svc.On("GetDocument", mock.Anything, docURL).Return(nil, companyhouse.ErrNotFound)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		defer fc.AssertExpectations(t)
 		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
+	})
+
+	t.Run("should return a tool error when document_id is unknown", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", "unknown-id").Return("", cache.ErrFilingRefNotFound)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
+
+		// Act
+		result, err := callTool(srv.handleFetchFiling, map[string]any{
+			"ch_number":   "00445790",
+			"document_id": "unknown-id",
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+		assert.Contains(t, resultText(result), "list_filings")
 	})
 
 	t.Run("should return a tool error when ch_number is missing", func(t *testing.T) {
@@ -557,14 +611,14 @@ func TestHandleFetchFiling(t *testing.T) {
 		srv := newTestServer(&mockCHService{})
 
 		// Act
-		result, err := callTool(srv.handleFetchFiling, map[string]any{"document_url": docURL})
+		result, err := callTool(srv.handleFetchFiling, map[string]any{"document_id": testDocumentID})
 
 		// Assert
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
-	t.Run("should return a tool error when document_url is missing", func(t *testing.T) {
+	t.Run("should return a tool error when document_id is missing", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
@@ -586,8 +640,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "../../etc/passwd",
-			"document_url": docURL,
+			"ch_number":   "../../etc/passwd",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -613,6 +667,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
 			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
@@ -628,8 +683,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -659,6 +714,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
 			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
@@ -674,8 +730,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -701,6 +757,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
 		defer fc.AssertExpectations(t)
@@ -708,8 +765,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -741,6 +798,7 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("PutZipEntries", mock.Anything, "00445790", "abc123",
 			mock.MatchedBy(func(entries []cache.ZipCacheEntry) bool {
@@ -753,8 +811,8 @@ func TestHandleFetchFiling(t *testing.T) {
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -781,63 +839,31 @@ func TestHandleFetchFiling(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		defer fc.AssertExpectations(t)
 		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
-	})
-
-	t.Run("should return tool error when document_url contains invalid docID characters", func(t *testing.T) {
-		t.Parallel()
-
-		// Arrange — path traversal attempt in doc ID segment
-		srv := New(&mockCHService{}, &mockFilingCache{})
-
-		// Act
-		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": "https://document-api.company-information.service.gov.uk/document/../evil",
-		})
-
-		// Assert
-		require.NoError(t, err)
-		assert.True(t, isToolError(result))
-		assert.Contains(t, resultText(result), "invalid document ID")
-	})
-
-	t.Run("should return tool error when document_url contains oversized docID", func(t *testing.T) {
-		t.Parallel()
-
-		// Arrange — doc ID that exceeds the 200-character limit
-		longID := strings.Repeat("a", 201)
-		srv := New(&mockCHService{}, &mockFilingCache{})
-
-		// Act
-		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": "https://document-api.company-information.service.gov.uk/document/" + longID,
-		})
-
-		// Assert
-		require.NoError(t, err)
-		assert.True(t, isToolError(result))
-		assert.Contains(t, resultText(result), "invalid document ID")
 	})
 }
 
 func TestHandleGetLatest(t *testing.T) {
 	t.Parallel()
 
-	const docURL = "https://document-api.company-information.service.gov.uk/document/abc123"
+	const (
+		docURL         = "https://document-api.company-information.service.gov.uk/document/abc123"
+		testDocumentID = "11111111-2222-4333-8444-555555555555"
+		transactionID  = "MzI1MDk3NjkxOGFkaXF6a2N4"
+	)
 
 	t.Run("should fetch and cache the latest filing for a category", func(t *testing.T) {
 		t.Parallel()
@@ -850,7 +876,7 @@ func TestHandleGetLatest(t *testing.T) {
 		}).Return(
 			[]companyhouse.Filing{
 				{
-					TransactionID: "MzI1MDk3NjkxOGFkaXF6a2N4",
+					TransactionID: transactionID,
 					Type:          "AA",
 					Date:          time.Date(2024, 6, 21, 0, 0, 0, 0, time.UTC),
 					DocumentURL:   docURL,
@@ -867,6 +893,7 @@ func TestHandleGetLatest(t *testing.T) {
 		)
 		defer svc.AssertExpectations(t)
 		fc := &mockFilingCache{}
+		fc.On("StoreFilingRef", mock.Anything, "00445790", transactionID, docURL).Return(testDocumentID, nil)
 		fc.On("Get", mock.Anything, "00445790", "abc123").Return((*cache.FilingEntry)(nil), nil)
 		fc.On("Put", mock.Anything, "00445790", "abc123", "application/pdf", "", mock.Anything).Return("/cache/filing.pdf", int64(11), nil)
 		defer fc.AssertExpectations(t)
@@ -881,6 +908,9 @@ func TestHandleGetLatest(t *testing.T) {
 		// Assert
 		require.NoError(t, err)
 		assert.False(t, isToolError(result))
+		var out fetchResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
+		assert.Equal(t, testDocumentID, out.DocumentID)
 	})
 
 	t.Run("should return a tool error when no filings exist for the category", func(t *testing.T) {
@@ -1082,44 +1112,6 @@ func TestHandleClearCache(t *testing.T) {
 	})
 }
 
-func TestFetchFilingSSRFValidation(t *testing.T) {
-	t.Parallel()
-
-	t.Run("should return a tool error for a non-CH document URL", func(t *testing.T) {
-		t.Parallel()
-
-		// Arrange
-		srv := newTestServer(&mockCHService{})
-
-		// Act
-		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": "http://169.254.169.254/document/sensitive",
-		})
-
-		// Assert
-		require.NoError(t, err)
-		assert.True(t, isToolError(result))
-	})
-
-	t.Run("should return a tool error for an HTTPS URL on a non-CH domain", func(t *testing.T) {
-		t.Parallel()
-
-		// Arrange
-		srv := newTestServer(&mockCHService{})
-
-		// Act
-		result, err := callTool(srv.handleFetchFiling, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": "https://evil.com/document/abc123",
-		})
-
-		// Assert
-		require.NoError(t, err)
-		assert.True(t, isToolError(result))
-	})
-}
-
 func TestHandleListFilingsFiltering(t *testing.T) {
 	t.Parallel()
 
@@ -1127,6 +1119,10 @@ func TestHandleListFilingsFiltering(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
+		const (
+			withDocURL = "https://document-api.company-information.service.gov.uk/document/abc123"
+			withDocID  = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		)
 		svc := &mockCHService{}
 		svc.On("GetFilingHistory", mock.Anything, "00445790", companyhouse.ListFilingsOptions{
 			ItemsPerPage: defaultFilingsLimit,
@@ -1135,18 +1131,21 @@ func TestHandleListFilingsFiltering(t *testing.T) {
 				{
 					TransactionID: "with-doc",
 					Type:          "AA",
-					DocumentURL:   "https://document-api.company-information.service.gov.uk/document/abc123",
+					DocumentURL:   withDocURL,
 				},
 				{
 					TransactionID: "no-doc",
 					Type:          "CS01",
-					DocumentURL:   "", // no downloadable document
+					DocumentURL:   "", // no downloadable document — StoreFilingRef must not be called
 				},
 			},
 			nil,
 		)
 		defer svc.AssertExpectations(t)
-		srv := newTestServer(svc)
+		fc := &mockFilingCache{}
+		fc.On("StoreFilingRef", mock.Anything, "00445790", "with-doc", withDocURL).Return(withDocID, nil)
+		defer fc.AssertExpectations(t)
+		srv := New(svc, fc)
 
 		// Act
 		result, err := callTool(srv.handleListFilings, map[string]any{"ch_number": "00445790"})
@@ -1156,8 +1155,8 @@ func TestHandleListFilingsFiltering(t *testing.T) {
 		assert.False(t, isToolError(result))
 		var out []filingResult
 		require.NoError(t, json.Unmarshal([]byte(resultText(result)), &out))
-		assert.Len(t, out, 1)
-		assert.Equal(t, "with-doc", out[0].TransactionID)
+		require.Len(t, out, 1)
+		assert.Equal(t, withDocID, out[0].DocumentID)
 	})
 }
 
@@ -1406,7 +1405,7 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 		assert.Contains(t, out.Warnings[0], "report.pdf")
 		assert.Contains(t, out.Warnings[0], "list_zip_contents")
 		assert.Contains(t, out.Warnings[0], "12345678")
-		assert.Contains(t, out.Warnings[0], "document_url")
+		assert.Contains(t, out.Warnings[0], "document_id")
 	})
 
 	t.Run("should say no alternatives available when pdf_rendered and all zip entries are primary", func(t *testing.T) {
@@ -1454,7 +1453,10 @@ func TestHandleExtractXBRLFacts(t *testing.T) {
 func TestHandleListZipContents(t *testing.T) {
 	t.Parallel()
 
-	const docURL = "https://document-api.company-information.service.gov.uk/document/abc123"
+	const (
+		docURL         = "https://document-api.company-information.service.gov.uk/document/abc123"
+		testDocumentID = "11111111-2222-4333-8444-555555555555"
+	)
 
 	t.Run("should return manifest for a cached zip filing", func(t *testing.T) {
 		t.Parallel()
@@ -1465,14 +1467,15 @@ func TestHandleListZipContents(t *testing.T) {
 			{Filename: "report.pdf", LocalPath: "/cache/report.pdf", ContentType: "application/pdf", FileSize: 4823091, IsPrimary: false},
 		}
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(records, len(records), nil)
 		defer fc.AssertExpectations(t)
 		srv := New(&mockCHService{}, fc)
 
 		// Act
 		result, err := callTool(srv.handleListZipContents, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
@@ -1497,20 +1500,42 @@ func TestHandleListZipContents(t *testing.T) {
 
 		// Arrange
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, nil)
 		defer fc.AssertExpectations(t)
 		srv := New(&mockCHService{}, fc)
 
 		// Act
 		result, err := callTool(srv.handleListZipContents, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 		assert.Contains(t, resultText(result), "not cached")
+	})
+
+	t.Run("should return a tool error when document_id is unknown", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", "unknown-id").Return("", cache.ErrFilingRefNotFound)
+		defer fc.AssertExpectations(t)
+		srv := New(&mockCHService{}, fc)
+
+		// Act
+		result, err := callTool(srv.handleListZipContents, map[string]any{
+			"ch_number":   "00445790",
+			"document_id": "unknown-id",
+		})
+
+		// Assert
+		require.NoError(t, err)
+		assert.True(t, isToolError(result))
+		assert.Contains(t, resultText(result), "list_filings")
 	})
 
 	t.Run("should return a tool error for missing ch_number", func(t *testing.T) {
@@ -1520,24 +1545,21 @@ func TestHandleListZipContents(t *testing.T) {
 		srv := New(&mockCHService{}, &mockFilingCache{})
 
 		// Act
-		result, err := callTool(srv.handleListZipContents, map[string]any{"document_url": docURL})
+		result, err := callTool(srv.handleListZipContents, map[string]any{"document_id": testDocumentID})
 
 		// Assert
 		require.NoError(t, err)
 		assert.True(t, isToolError(result))
 	})
 
-	t.Run("should return a tool error for an invalid document_url", func(t *testing.T) {
+	t.Run("should return a tool error for missing document_id", func(t *testing.T) {
 		t.Parallel()
 
 		// Arrange
 		srv := New(&mockCHService{}, &mockFilingCache{})
 
 		// Act
-		result, err := callTool(srv.handleListZipContents, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": "https://evil.com/document/abc123",
-		})
+		result, err := callTool(srv.handleListZipContents, map[string]any{"ch_number": "00445790"})
 
 		// Assert
 		require.NoError(t, err)
@@ -1549,14 +1571,15 @@ func TestHandleListZipContents(t *testing.T) {
 
 		// Arrange
 		fc := &mockFilingCache{}
+		fc.On("ResolveFilingRef", mock.Anything, "00445790", testDocumentID).Return(docURL, nil)
 		fc.On("GetZipEntries", mock.Anything, "00445790", "abc123").Return(([]cache.ZipEntryRecord)(nil), 0, errors.New("db error"))
 		defer fc.AssertExpectations(t)
 		srv := New(&mockCHService{}, fc)
 
 		// Act
 		_, err := callTool(srv.handleListZipContents, map[string]any{
-			"ch_number":    "00445790",
-			"document_url": docURL,
+			"ch_number":   "00445790",
+			"document_id": testDocumentID,
 		})
 
 		// Assert
