@@ -34,6 +34,8 @@ type FilingCache interface {
 	PutZipEntries(ctx context.Context, chNumber, docID string, entries []cache.ZipCacheEntry, totalInArchive int) (primaryPath string, err error)
 	GetZipEntries(ctx context.Context, chNumber, docID string) ([]cache.ZipEntryRecord, int, error)
 	ParseFilingPath(realPath string) (chNumber, docID string, err error)
+	StoreFilingRef(ctx context.Context, chNumber, transactionID, documentURL string) (documentID string, err error)
+	ResolveFilingRef(ctx context.Context, chNumber, documentID string) (documentURL string, err error)
 	Clear(ctx context.Context, chNumber string) (cache.ClearResult, error)
 	ValidatePath(path string) (string, error)
 }
@@ -75,15 +77,15 @@ type profileResult struct {
 
 // filingResult is the minimal per-filing response for list_filings.
 type filingResult struct {
-	TransactionID string `json:"transaction_id"`
-	Type          string `json:"type"`
-	Description   string `json:"description"`
-	Date          string `json:"date"` // YYYY-MM-DD
-	DocumentURL   string `json:"document_url"`
+	DocumentID  string `json:"document_id"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Date        string `json:"date"` // YYYY-MM-DD
 }
 
 // fetchResult is the response for fetch_filing and get_latest.
 type fetchResult struct {
+	DocumentID     string `json:"document_id"`
 	LocalPath      string `json:"local_path"`
 	ContentType    string `json:"content_type"`
 	FileSizeBytes  int64  `json:"file_size_bytes"`
@@ -192,16 +194,19 @@ func (s *Server) handleListFilings(ctx context.Context, req mcp.CallToolRequest)
 		if f.DocumentURL == "" {
 			continue
 		}
+		docID, refErr := s.cache.StoreFilingRef(ctx, chNumber, f.TransactionID, f.DocumentURL)
+		if refErr != nil {
+			return nil, fmt.Errorf("store filing ref: %w", refErr)
+		}
 		date := ""
 		if !f.Date.IsZero() {
 			date = f.Date.Format("2006-01-02")
 		}
 		out = append(out, filingResult{
-			TransactionID: f.TransactionID,
-			Type:          f.Type,
-			Description:   f.Description,
-			Date:          date,
-			DocumentURL:   f.DocumentURL,
+			DocumentID:  docID,
+			Type:        f.Type,
+			Description: f.Description,
+			Date:        date,
 		})
 	}
 	return toolResultJSON(out)
@@ -216,11 +221,18 @@ func (s *Server) handleFetchFiling(ctx context.Context, req mcp.CallToolRequest)
 	if !companyhouse.ValidateCHNumber(chNumber) {
 		return toolError("ch_number contains invalid characters")
 	}
-	documentURL, err := req.RequireString("document_url")
+	documentID, err := req.RequireString("document_id")
 	if err != nil {
-		return toolError("document_url is required")
+		return toolError("document_id is required")
 	}
-	return s.fetchDocument(ctx, chNumber, documentURL)
+	documentURL, refErr := s.cache.ResolveFilingRef(ctx, chNumber, documentID)
+	if errors.Is(refErr, cache.ErrFilingRefNotFound) {
+		return toolError("document_id not found; call list_filings or get_latest first to obtain a valid document_id")
+	}
+	if refErr != nil {
+		return nil, fmt.Errorf("resolve filing ref: %w", refErr)
+	}
+	return s.fetchDocument(ctx, chNumber, documentURL, documentID)
 }
 
 // handleGetLatest implements the get_latest tool.
@@ -251,22 +263,30 @@ func (s *Server) handleGetLatest(ctx context.Context, req mcp.CallToolRequest) (
 		return toolError("most recent filing in that category has no downloadable document")
 	}
 
-	return s.fetchDocument(ctx, chNumber, filings[0].DocumentURL)
+	documentID, refErr := s.cache.StoreFilingRef(ctx, chNumber, filings[0].TransactionID, filings[0].DocumentURL)
+	if refErr != nil {
+		return nil, fmt.Errorf("store filing ref: %w", refErr)
+	}
+	return s.fetchDocument(ctx, chNumber, filings[0].DocumentURL, documentID)
 }
 
 // fetchDocument retrieves a filing from the cache or downloads it from CH.
+// documentURL is a trusted CH document API URL resolved from the filing_refs table.
+// documentID is the opaque UUID to include in the response.
 // Returns a cached result immediately if available; otherwise fetches from CH and stores it.
-func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string) (*mcp.CallToolResult, error) {
+func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL, documentID string) (*mcp.CallToolResult, error) {
+	// The URL arrives from our own DB (filing_refs), so these are internal validations,
+	// not user-input checks. They guard against corrupt DB values.
 	if !companyhouse.ValidateDocumentURL(documentURL) {
-		return toolError("document_url must be a Companies House document API URL (document-api.company-information.service.gov.uk)")
+		return nil, fmt.Errorf("stored document_url is not a valid CH document API URL: %s", documentURL)
 	}
 
 	docID, ok := companyhouse.ParseDocumentID(documentURL)
 	if !ok {
-		return toolError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)")
+		return nil, fmt.Errorf("stored document_url does not contain a recognisable CH document ID: %s", documentURL)
 	}
 	if !companyhouse.ValidateDocID(docID) {
-		return toolError("document_url contains an invalid document ID")
+		return nil, fmt.Errorf("stored document_url contains an invalid document ID: %s", documentURL)
 	}
 
 	entry, err := s.cache.Get(ctx, chNumber, docID)
@@ -275,6 +295,7 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 	}
 	if entry != nil {
 		res := fetchResult{
+			DocumentID:    documentID,
 			LocalPath:     entry.LocalPath,
 			ContentType:   entry.ContentType,
 			FileSizeBytes: entry.FileSize,
@@ -335,6 +356,7 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 		}
 		primary := zipEntries[0] // ExtractAll guarantees primary is first
 		return toolResultJSON(fetchResult{
+			DocumentID:     documentID,
 			LocalPath:      primaryPath,
 			ContentType:    primary.ContentType,
 			FileSizeBytes:  int64(len(primary.Content)),
@@ -351,6 +373,7 @@ func (s *Server) fetchDocument(ctx context.Context, chNumber, documentURL string
 	}
 
 	return toolResultJSON(fetchResult{
+		DocumentID:    documentID,
 		LocalPath:     localPath,
 		ContentType:   doc.ContentType,
 		FileSizeBytes: written,
@@ -403,19 +426,23 @@ func (s *Server) handleListZipContents(ctx context.Context, req mcp.CallToolRequ
 		return toolError("ch_number contains invalid characters")
 	}
 
-	documentURL, err := req.RequireString("document_url")
+	documentID, err := req.RequireString("document_id")
 	if err != nil {
-		return toolError("document_url is required")
+		return toolError("document_id is required")
 	}
-	if !companyhouse.ValidateDocumentURL(documentURL) {
-		return toolError("document_url must be a Companies House document API URL (document-api.company-information.service.gov.uk)")
+	documentURL, refErr := s.cache.ResolveFilingRef(ctx, chNumber, documentID)
+	if errors.Is(refErr, cache.ErrFilingRefNotFound) {
+		return toolError("document_id not found; call list_filings or get_latest first to obtain a valid document_id")
+	}
+	if refErr != nil {
+		return nil, fmt.Errorf("resolve filing ref: %w", refErr)
 	}
 	docID, ok := companyhouse.ParseDocumentID(documentURL)
 	if !ok {
-		return toolError("document_url does not contain a recognisable CH document ID (.../document/{id} or .../document/{id}/content)")
+		return nil, fmt.Errorf("stored document_url does not contain a recognisable CH document ID: %s", documentURL)
 	}
 	if !companyhouse.ValidateDocID(docID) {
-		return toolError("document_url contains an invalid document ID")
+		return nil, fmt.Errorf("stored document_url contains an invalid document ID: %s", documentURL)
 	}
 
 	records, totalInArchive, err := s.cache.GetZipEntries(ctx, chNumber, docID)
@@ -493,11 +520,11 @@ func (s *Server) handleExtractXBRLFacts(ctx context.Context, req mcp.CallToolReq
 // If the file came from a zip archive it names any non-primary alternative entries;
 // if no alternatives exist it says so; if not from a zip it falls back to the generic message.
 func buildPDFRenderedWarning(ctx context.Context, c FilingCache, realPath string) string {
-	chNumber, docID, err := c.ParseFilingPath(realPath)
+	chNumber, internalDocID, err := c.ParseFilingPath(realPath)
 	if err != nil {
 		return "narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"
 	}
-	records, _, err := c.GetZipEntries(ctx, chNumber, docID)
+	records, _, err := c.GetZipEntries(ctx, chNumber, internalDocID)
 	if err != nil || len(records) == 0 {
 		return "narrative text is not reliably accessible in PDF-rendered iXBRL; consider fetching an alternative filing format"
 	}
@@ -511,8 +538,8 @@ func buildPDFRenderedWarning(ctx context.Context, c FilingCache, realPath string
 		return "narrative text is not reliably accessible in PDF-rendered iXBRL; no alternative formats are available in the source archive"
 	}
 	return fmt.Sprintf(
-		"narrative text is not reliably accessible in PDF-rendered iXBRL; %d alternative file(s) are available in the source archive: %s — use list_zip_contents with ch_number %q and the document_url from list_filings containing document ID %q",
-		len(alts), strings.Join(alts, ", "), chNumber, docID,
+		"narrative text is not reliably accessible in PDF-rendered iXBRL; %d alternative file(s) are available in the source archive: %s — use list_zip_contents with ch_number %q and the same document_id used to fetch this filing",
+		len(alts), strings.Join(alts, ", "), chNumber,
 	)
 }
 

@@ -584,3 +584,133 @@ func TestClear_ZipEntries(t *testing.T) {
 		assert.Len(t, recordsB, 1)
 	})
 }
+
+func TestStoreFilingRef(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chNumber      = "00445790"
+		transactionID = "MzI1MDk3NjkxOGFkaXF6a2N4"
+		documentURL   = "https://document-api.company-information.service.gov.uk/document/abc123"
+	)
+
+	t.Run("should generate and store a new document_id", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+
+		// Act
+		docID, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+
+		// Assert
+		require.NoError(t, err)
+		assert.NotEmpty(t, docID)
+		// UUID v4 format: 8-4-4-4-12 hex chars
+		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, docID)
+	})
+
+	t.Run("should be idempotent — same document_id on repeat calls", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+
+		// Act
+		first, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+		require.NoError(t, err)
+		second, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+		require.NoError(t, err)
+
+		// Assert
+		assert.Equal(t, first, second)
+	})
+
+	t.Run("should generate different document_ids for different filings", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+
+		// Act
+		id1, err := c.StoreFilingRef(context.Background(), chNumber, "txn-1", "https://document-api.company-information.service.gov.uk/document/doc1")
+		require.NoError(t, err)
+		id2, err := c.StoreFilingRef(context.Background(), chNumber, "txn-2", "https://document-api.company-information.service.gov.uk/document/doc2")
+		require.NoError(t, err)
+
+		// Assert
+		assert.NotEqual(t, id1, id2)
+	})
+
+	t.Run("should survive a cache Clear — refs are not deleted", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		docID, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+		require.NoError(t, err)
+
+		// Act
+		_, clearErr := c.Clear(context.Background(), "")
+		require.NoError(t, clearErr)
+
+		// Assert — ref still resolvable after clear
+		resolved, resolveErr := c.ResolveFilingRef(context.Background(), chNumber, docID)
+		require.NoError(t, resolveErr)
+		assert.Equal(t, documentURL, resolved)
+	})
+}
+
+func TestResolveFilingRef(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chNumber      = "00445790"
+		transactionID = "MzI1MDk3NjkxOGFkaXF6a2N4"
+		documentURL   = "https://document-api.company-information.service.gov.uk/document/abc123"
+	)
+
+	t.Run("should return the document_url for a known document_id", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+		docID, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+		require.NoError(t, err)
+
+		// Act
+		resolved, err := c.ResolveFilingRef(context.Background(), chNumber, docID)
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, documentURL, resolved)
+	})
+
+	t.Run("should return ErrFilingRefNotFound for an unknown document_id", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange
+		c := newTestCache(t)
+
+		// Act
+		_, err := c.ResolveFilingRef(context.Background(), chNumber, "unknown-id")
+
+		// Assert
+		assert.ErrorIs(t, err, ErrFilingRefNotFound)
+	})
+
+	t.Run("should return ErrFilingRefNotFound when ch_number does not match", func(t *testing.T) {
+		t.Parallel()
+
+		// Arrange — store a ref under one company, try to resolve under another
+		c := newTestCache(t)
+		docID, err := c.StoreFilingRef(context.Background(), chNumber, transactionID, documentURL)
+		require.NoError(t, err)
+
+		// Act
+		_, err = c.ResolveFilingRef(context.Background(), "99999999", docID)
+
+		// Assert
+		assert.ErrorIs(t, err, ErrFilingRefNotFound)
+	})
+}
