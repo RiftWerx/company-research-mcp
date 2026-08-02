@@ -5,11 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/alecthomas/kong"
 
 	"github.com/riftwerx/company-research/internal/cache"
 	"github.com/riftwerx/company-research/internal/companyhouse"
+	"github.com/riftwerx/company-research/internal/skills"
 	"github.com/riftwerx/company-research/internal/version"
 )
 
@@ -35,11 +38,48 @@ type FilingCache interface {
 }
 
 // InstallSkillCmd implements the install-skill subcommand.
-type InstallSkillCmd struct{}
+type InstallSkillCmd struct {
+	Dest string `arg:"" name:"destination" help:"Directory to install skill files into (must exist)."`
+	CLI  bool   `name:"cli" help:"Install only the CLI mode skill."`
+	MCP  bool   `name:"mcp" help:"Install only the MCP mode skill."`
+	out  io.Writer
+}
 
-// Run prints the skill install instructions.
+// Run copies embedded skill files to the destination directory.
 func (c *InstallSkillCmd) Run() error {
-	return fmt.Errorf("install-skill: not yet implemented")
+	info, err := os.Stat(c.Dest)
+	if err != nil {
+		return fmt.Errorf("install skill: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("install skill: %q is not a directory", c.Dest)
+	}
+
+	both := !c.CLI && !c.MCP
+	var names []string
+	if c.MCP || both {
+		names = append(names, skills.NameMCP)
+	}
+	if c.CLI || both {
+		names = append(names, skills.NameCLI)
+	}
+
+	for _, name := range names {
+		data, err := skills.Files.ReadFile(name + "/SKILL.md")
+		if err != nil {
+			return fmt.Errorf("install skill: %w", err)
+		}
+		dir := filepath.Join(c.Dest, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("install skill: %w", err)
+		}
+		dest := filepath.Join(dir, "SKILL.md")
+		if err := os.WriteFile(dest, data, 0o644); err != nil { //nolint:gosec // skill files are intended to be world-readable
+			return fmt.Errorf("install skill: %w", err)
+		}
+		fmt.Fprintln(writerOf(c.out), filepath.Join(name, "SKILL.md"))
+	}
+	return nil
 }
 
 // CLI is the root Kong command struct.

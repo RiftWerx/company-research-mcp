@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/riftwerx/company-research/internal/cache"
 	"github.com/riftwerx/company-research/internal/cli"
@@ -29,7 +30,7 @@ func main() {
 	kctx := cli.Parse()
 
 	// install-skill is a setup command; it does not need CH_API_KEY or services.
-	if kctx.Command() == "install-skill" {
+	if strings.SplitN(kctx.Command(), " ", 2)[0] == "install-skill" {
 		if err := cli.Execute(context.Background(), kctx); err != nil {
 			log.Fatal(err)
 		}

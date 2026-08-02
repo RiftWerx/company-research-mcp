@@ -1,6 +1,6 @@
 module github.com/riftwerx/company-research
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/alecthomas/kong v1.15.0
@@ -25,7 +25,7 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
