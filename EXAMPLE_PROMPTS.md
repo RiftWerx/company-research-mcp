@@ -31,8 +31,8 @@ Example prompts for each tool provided by this MCP server.
 
 > Download a specific filing document.
 
-- "Download the filing at /document/abc123 for company 00445790"
-- "Fetch the document at the URL returned by list_filings for company 01234567"
+- "Download the filing with document ID abc123 for company 00445790"
+- "Fetch the document whose ID was returned by list_filings for company 01234567"
 
 ## `get_latest`
 

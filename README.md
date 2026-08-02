@@ -237,6 +237,10 @@ Returns `{facts, count, truncated, render_type, warnings?}`. Each fact has `name
 use `name_prefix` to narrow the query (e.g. `name_prefix="Revenue"` returns only Revenue-related
 facts).
 
+By default only numeric facts (`ix:nonFraction`) are returned. Pass `include_text_facts=true` to
+also include text facts (`ix:nonNumeric`) such as company name and director names; `name_prefix`
+filtering applies to text facts too when this is set.
+
 `render_type` is `"native_ixbrl"` for standard filings or `"pdf_rendered"` for filings produced
 by a PDF-to-HTML converter (e.g. `pdf2htmlEX`). PDF-rendered filings have fully extractable XBRL
 facts but fragmented narrative text (MD&A, notes); when detected a `warnings` array explains this
@@ -250,9 +254,9 @@ Downloaded filings are stored on disk and reused on subsequent requests:
 
 | Platform | Path |
 |---|---|
-| Linux | `~/.cache/company-research.mcp/` |
-| macOS | `~/Library/Caches/company-research.mcp/` |
-| Windows | `%LOCALAPPDATA%\company-research.mcp\` |
+| Linux | `~/.cache/company-research/` |
+| macOS | `~/Library/Caches/company-research/` |
+| Windows | `%LOCALAPPDATA%\company-research\` |
 
 Use the `clear_cache` tool to free disk space.
 
