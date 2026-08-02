@@ -1,7 +1,8 @@
 # company-research
 
-An MCP server that fetches official company filings — annual reports, AGM documents, regulatory
-announcements — from public sources and makes them available to an AI client.
+Fetches official company filings — annual reports, AGM documents, regulatory announcements — from
+public sources and makes them available to an AI client. Works as an MCP server (for agents with
+MCP support) or as a standalone CLI tool (for direct Bash invocations or scripting).
 
 ## Current Coverage
 
@@ -152,6 +153,50 @@ Add to `~/.continue/config.json` under `mcpServers`:
   ]
 }
 ```
+
+## CLI Mode
+
+The binary can also be used directly from the shell or from an agent's Bash tool — useful for
+scripting or for agents that prefer direct invocations over MCP tool calls.
+
+```bash
+export CH_API_KEY=your-key-here
+
+company-research search-company "Tesco"
+company-research get-latest 00445790 accounts
+company-research get-company-profile 00445790 | jq .name
+```
+
+All commands output JSON to stdout; errors go to stderr with exit 1. Run
+`company-research --help` for a full list of subcommands and flags.
+
+## Agent Skills
+
+Install embedded skill files to give your AI agent workflow knowledge for using
+company-research effectively. No `CH_API_KEY` required.
+
+### Claude Code
+
+```bash
+company-research install-skill ~/.claude/skills/
+```
+
+Installs both the MCP skill and the CLI skill. To install only one:
+
+```bash
+company-research install-skill --mcp ~/.claude/skills/   # MCP mode only
+company-research install-skill --cli ~/.claude/skills/   # CLI mode only
+```
+
+### Other agents
+
+Check your agent's documentation for its skill or custom-prompt directory, then:
+
+```bash
+company-research install-skill <agent-skill-directory>
+```
+
+---
 
 ## Available Tools
 
