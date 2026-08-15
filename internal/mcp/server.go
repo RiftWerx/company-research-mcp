@@ -25,7 +25,7 @@ func New(chSvc CompanyHouseService, cache FilingCache) *Server {
 // Serve registers all CH tools and starts the MCP stdio server.
 // It blocks until the client disconnects or a signal is received.
 func (s *Server) Serve() error {
-	mcpServer := server.NewMCPServer(serverName, version.Version,
+	mcpServer := server.NewMCPServer(serverName, version.String(),
 		server.WithToolCapabilities(false),
 	)
 

@@ -15,7 +15,7 @@ import (
 )
 
 // userAgent is sent in the User-Agent header of every outbound HTTP request.
-var userAgent = "company-research/" + version.Version
+var userAgent = "company-research/" + version.String()
 
 func main() {
 	// No arguments → MCP stdio mode (existing behaviour).
