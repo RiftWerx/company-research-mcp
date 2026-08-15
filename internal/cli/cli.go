@@ -104,7 +104,7 @@ func Parse() *kong.Context {
 	return kong.Parse(&cli,
 		kong.Name("company-research"),
 		kong.Description("UK company research tool."),
-		kong.Vars{"version": version.Version},
+		kong.Vars{"version": version.String()},
 		kong.UsageOnError(),
 	)
 }
